@@ -18,6 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api ./api
 COPY workers ./workers
 COPY ui ./ui
+COPY vectordb ./vectordb
+COPY scripts ./scripts
+COPY data ./data
 
 EXPOSE 8000
 

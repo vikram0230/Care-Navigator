@@ -20,9 +20,42 @@ class Settings(BaseSettings):
         case_sensitive=True,
     )
 
-    OPENAI_API_KEY: str = Field(
+    GEMINI_API_KEY: str = Field(
         default="",
-        description="OpenAI API key for embeddings and chat.",
+        description="Google Gemini API key (AI Studio) for embeddings and chat.",
+    )
+    GEMINI_CHAT_MODEL: str = Field(
+        default="gemini-2.0-flash",
+        description="Gemini model id for conversational RAG (e.g. gemini-2.0-flash).",
+    )
+    GEMINI_EMBEDDING_MODEL: str = Field(
+        default="gemini-embedding-001",
+        description=(
+            "Gemini embedding model for RAG (e.g. gemini-embedding-001). "
+            "Legacy text-embedding-004 was retired from the API; see Gemini embeddings docs."
+        ),
+    )
+    EMBEDDING_SUB_BATCH_SIZE: int = Field(
+        default=50,
+        ge=1,
+        le=250,
+        description=(
+            "Texts per embedding API round-trip. Each LangChain batch can map to one HTTP "
+            "embed_content call; large PDFs need small batches + delay to avoid free-tier bursts."
+        ),
+    )
+    EMBEDDING_INTER_BATCH_DELAY_SECONDS: float = Field(
+        default=0.7,
+        ge=0.0,
+        description=(
+            "Seconds to sleep between embedding sub-batches (free tier: ~100 embed requests/minute)."
+        ),
+    )
+    EMBEDDING_RATE_LIMIT_MAX_RETRIES: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+        description="Retries per sub-batch when the provider returns 429 / RESOURCE_EXHAUSTED.",
     )
     REDIS_URL: str = Field(
         default="redis://localhost:6379/0",
@@ -47,7 +80,7 @@ class Settings(BaseSettings):
         description="Celery result backend URL.",
     )
     COMPANY_IDS: str = Field(
-        default="acme_corp,globex_inc",
+        default="bcbs,wells_fargo",
         description="Comma-separated list of valid tenant company IDs.",
     )
     LOG_LEVEL: str = Field(

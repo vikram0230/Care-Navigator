@@ -5,14 +5,21 @@ from collections.abc import Generator
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic_settings import SettingsConfigDict
 
 # Load app only after test-friendly defaults are set (before Settings is cached).
 os.environ.setdefault("ENVIRONMENT", "development")
 os.environ.setdefault("LOG_LEVEL", "INFO")
-os.environ.setdefault("COMPANY_IDS", "acme_corp,globex_inc")
+os.environ.setdefault("COMPANY_IDS", "bcbs,wells_fargo")
 
-from api.config import get_settings
+from api.config import Settings, get_settings
 from api.main import app
+
+
+class SettingsForTests(Settings):
+    """``Settings`` that ignore ``.env`` for deterministic unit tests."""
+
+    model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
 
 @pytest.fixture

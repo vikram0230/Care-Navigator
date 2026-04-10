@@ -25,6 +25,8 @@ services:
       - chroma_data:/chroma/chroma
     environment:
       ANONYMIZED_TELEMETRY: "false"
+      # Required for ``client.reset()`` / ``scripts/seed_documents.py --reset`` in development
+      ALLOW_RESET: "TRUE"
     healthcheck:
       test:
         [
@@ -46,13 +48,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      COMPANY_IDS: ${COMPANY_IDS:-acme_corp,globex_inc}
+      COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
@@ -75,13 +77,13 @@ services:
       dockerfile: Dockerfile.worker
     container_name: care-navigator-celery
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      COMPANY_IDS: ${COMPANY_IDS:-acme_corp,globex_inc}
+      COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
@@ -119,13 +121,13 @@ services:
     ports:
       - "8501:8501"
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
-      COMPANY_IDS: ${COMPANY_IDS:-acme_corp,globex_inc}
+      COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
