@@ -8,94 +8,154 @@ Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and ref
 - **Production-shaped layout**: API, Redis, Celery worker, Streamlit shell, Prometheus, and Grafana in Docker Compose.
 - **Gemini-first**: chat and embeddings via `langchain-google-genai` and the `google-genai` SDK (not the deprecated `google.generativeai` path).
 
-## Architecture (today — Stages 1–2)
+## Reference architecture (target end-state)
+
+The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), Gemini, ingestion, cache warming, and observability. The codebase today implements **Stages 1–2** only (API shell, Chroma + seed, Gemini for embeddings); L1/L2, RAG HTTP routes, and full Streamlit chat are **planned**.
 
 ```mermaid
-flowchart LR
-  subgraph clients["Clients"]
-    UI["Streamlit"]
-  end
-  subgraph services["App services"]
-    API["FastAPI"]
-    WRK["Celery worker"]
-  end
-  subgraph stores["Data stores"]
-    RDS["Redis"]
-    VDB["ChromaDB"]
-  end
-  GEM["Gemini API"]
-  SEED["seed_documents.py"]
-  UI --> API
-  API --> RDS
-  WRK --> RDS
-  API --> VDB
-  WRK --> VDB
-  SEED --> VDB
-  SEED --> GEM
-  API -.-> GEM
+flowchart TD
+    User(["Employee\nBCBS employer or Wells Fargo employer"])
+
+    User --> UI
+
+    subgraph DC["Docker Compose — local dev or demo K8s"]
+
+        UI["Streamlit UI\nCompany switcher · chat history · cache hit indicator"]
+
+        UI --> API
+
+        API["FastAPI plus LangChain\nRAG pipeline · company_id isolation · conversation memory"]
+
+        API -->|"check L1"| L1
+        API -->|"check L2"| L2
+        API -->|"enqueue"| BROKER
+
+        subgraph REDIS["Redis"]
+            L1["L1 answer cache\nSemantic similarity above 0.95\nTTL 90 to 365 days by doc type"]
+            L2["L2 chunk cache\nCached Chroma chunks\nSkips vector search on hit"]
+            BROKER["Celery broker\nAsync LLM queue\nRate limit e.g. 100 req per minute"]
+        end
+
+        L2 -->|"cache miss retrieve"| CHROMA
+        BROKER --> WORKER
+
+        subgraph CHROMA["ChromaDB — multi-tenant collections"]
+            T1["global_tier1\nCDC · USPSTF · shared clinical reference\nAll employers"]
+            T2A["bcbs_tier2\nBCBS plan benefits and formulary"]
+            T2B["wells_fargo_tier2\nWells Fargo benefits · CVS formulary"]
+        end
+
+        WORKER["Celery worker\nLLM and heavy tasks\nRetry on failure"]
+
+        CHROMA -->|"chunks plus context"| LLM
+        WORKER --> LLM
+
+        LLM["Google Gemini\nEmbeddings and chat\nProd and HIPAA: see Production and compliance below"]
+
+        LLM -->|"answer"| API
+
+        subgraph INGEST["Ingestion and cache warming"]
+            PDF["PDF ingestion\nChunk · embed · store"]
+            WARM["Cache warming\nGenerate questions then pre-warm\nBlue-green swap"]
+        end
+
+        PDF -->|"embed and store"| CHROMA
+        WARM -->|"pre-warm answers"| L1
+
+        subgraph OBS["Observability"]
+            PROM["Prometheus\nCache hits · latency\nQueue depth · LLM calls"]
+            GRAF["Grafana\nL1 L2 miss rate · p95 latency\nBreakdown by company"]
+        end
+
+        PROM --> GRAF
+
+    end
+
+    style DC   fill:#f8f9fa,stroke:#dee2e6,stroke-width:1px,stroke-dasharray:5 5
+    style REDIS  fill:#fff8e6,stroke:#f0c040,stroke-width:1px
+    style CHROMA fill:#e6f0ff,stroke:#4a90d9,stroke-width:1px
+    style INGEST fill:#e8f5e9,stroke:#66bb6a,stroke-width:1px
+    style OBS    fill:#f3e5f5,stroke:#ab47bc,stroke-width:1px
+
+    style User   fill:#e0e0e0,stroke:#9e9e9e,color:#212121
+    style UI     fill:#b2dfdb,stroke:#00897b,color:#004d40
+    style API    fill:#b2dfdb,stroke:#00897b,color:#004d40
+    style L1     fill:#ffe082,stroke:#f9a825,color:#4e342e
+    style L2     fill:#ffe082,stroke:#f9a825,color:#4e342e
+    style BROKER fill:#ffe082,stroke:#f9a825,color:#4e342e
+    style T1     fill:#90caf9,stroke:#1565c0,color:#0d2a5e
+    style T2A    fill:#90caf9,stroke:#1565c0,color:#0d2a5e
+    style T2B    fill:#90caf9,stroke:#1565c0,color:#0d2a5e
+    style WORKER fill:#ffab91,stroke:#e64a19,color:#3e0a00
+    style LLM    fill:#ffab91,stroke:#e64a19,color:#3e0a00
+    style PDF    fill:#a5d6a7,stroke:#2e7d32,color:#1b3a1b
+    style WARM   fill:#a5d6a7,stroke:#2e7d32,color:#1b3a1b
+    style PROM   fill:#ce93d8,stroke:#6a1b9a,color:#2a0033
+    style GRAF   fill:#ce93d8,stroke:#6a1b9a,color:#2a0033
 ```
 
-- **ChromaDB** (HTTP): vector store; collections `global_tier1` and `{company_id}_tier2` (e.g. `bcbs_tier2`).
-- **Redis**: broker/backend for Celery; reserved for cache and sessions in later stages.
-- **Prometheus / Grafana**: scrape FastAPI `/metrics`; Grafana on port 3000 (default admin credentials in Compose).
+> **Implemented today:** FastAPI `/health` and `/metrics`, Compose (Redis, Chroma, API, Celery, Streamlit, Prometheus, Grafana), PDF → chunk → embed → upsert via `scripts/seed_documents.py`, and optional integration tests. The API **does not** call Chroma on user-facing routes yet—only ingestion and tests hit the vector store.
 
-> **Note:** The API loads Chroma settings but **does not yet call Chroma on HTTP routes**; only ingestion and tests hit the vector store today. The diagram below is the **planned end state**.
+### Component summary
 
-## Target architecture (planned)
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| UI | Streamlit | Company switcher, chat, cache hit indicator (planned beyond Stage 1 shell) |
+| API | FastAPI + LangChain | RAG pipeline, tenant isolation, conversation memory |
+| L1 cache | Redis (planned; optional GPTCache-style semantic layer) | Semantic answer cache, TTL by document type |
+| L2 cache | Redis | Chunk retrieval cache; skip Chroma on hit |
+| Queue | Redis + Celery | Async LLM and ingest tasks; rate limits |
+| Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (see `COMPANY_IDS` in config) |
+| LLM / embeddings | **Google Gemini** | Matches `api/gemini_client.py` and `GEMINI_*` settings |
+| Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`) |
+| Cache warming | Celery (planned) | Pre-warm L1 after upload; blue-green cache swap |
+| Monitoring | Prometheus + Grafana | Cache hit rate, latency p95, queue depth |
 
-End-state system: browser UI talks to a **RAG API** that retrieves from **tier-aware Chroma collections**, optionally uses **Redis** for cache and sessions, and generates answers with **Gemini**. **Celery** runs heavy or slow work (re-ingest, batch jobs). **Prometheus / Grafana** stay the observability path. **Batch seeding** remains for dev and baseline corpora; production may add upload-driven ingest via workers.
+### Cache check order (planned)
 
-```mermaid
-flowchart TB
-  subgraph actors["Actors"]
-    MEM["Member / employee"]
-    ADM["Benefits admin"]
-    OPS["Data operations"]
-  end
-  subgraph presentation["Presentation"]
-    ST["Streamlit app"]
-  end
-  subgraph application["Application"]
-    AP["FastAPI"]
-  end
-  subgraph background["Background"]
-    CW["Celery workers"]
-  end
-  subgraph persistence["Persistence"]
-    RD["Redis"]
-    CH["ChromaDB"]
-  end
-  subgraph models["Models"]
-    GM["Gemini"]
-  end
-  subgraph monitoring["Monitoring"]
-    PR["Prometheus"]
-    GF["Grafana"]
-  end
-  subgraph tooling["Ingestion and tooling"]
-    SD["seed_documents.py"]
-    UP["Planned: document upload / reindex API"]
-  end
-  MEM --> ST
-  ADM --> ST
-  ST -->|"REST: chat, citations, tenant"| AP
-  AP <--> RD
-  AP <--> CH
-  AP <--> GM
-  CW <--> RD
-  CW <--> CH
-  CW <--> GM
-  OPS --> SD
-  OPS --> UP
-  SD --> CH
-  SD --> GM
-  UP -.-> CW
-  UP -.-> CH
-  PR -->|scrape /metrics| AP
-  GF --> PR
+```
+Query arrives
+    │
+    ▼
+L1 semantic cache ──── HIT ──► return answer instantly
+    │
+    MISS
+    │
+    ▼
+L2 chunk cache ──────── HIT ──► skip ChromaDB, call LLM only
+    │
+    MISS
+    │
+    ▼
+ChromaDB retrieval ──────────► full pipeline → cache result in L1 + L2
 ```
 
-**Intended request path (RAG):** Streamlit → FastAPI → embed query (Gemini) → Chroma similarity search (global tier 1 + company tier 2, metadata filters) → build context → Gemini chat completion → return answer + source references. Redis can cache query embeddings, retrieval keys, or final answers; Celery can offload large ingests or scheduled re-embeds so the API stays responsive.
+**Tenants in seed data:** Default `COMPANY_IDS` are `bcbs` and `wells_fargo`. Add employers via `scripts/seed_documents.py` (`TIER2_SEED_FILES`) and `COMPANY_IDS`.
+
+## Production and compliance
+
+- **PHI / HIPAA**: For regulated workloads, prefer **Google Cloud Vertex AI** with appropriate agreements, or **on-cluster** models (e.g. Llama family) so sensitive payloads stay in your boundary. Cloud consumer API keys alone are not a HIPAA program.
+- **Collection names:** `global_tier1`, `bcbs_tier2`, `wells_fargo_tier2` for the default seed layout.
+
+## Scaling (planned)
+
+| Area | Direction |
+|------|-----------|
+| Workers | **KEDA** (or similar) to scale Celery on **Redis queue depth**, not only CPU |
+| Ingress | Multi-region active-active (e.g. Route 53 across `us-east-1` / `us-west-2`) when moving beyond Compose; health checks and stateless API tiers |
+| Chroma | Shard or partition by `company_id` as tenant count grows (e.g. dedicated instances or StatefulSets per tenant group) |
+| Open enrollment | **Blue-green** (or canary) cache swap so new corpora do not cause a thundering herd on cold L1/L2 |
+
+## Future work
+
+- **Stages 3–7** (see roadmap below): RAG API, tenancy policy, Redis L1/L2, Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
+- Wire **L1/L2** and Celery tasks into FastAPI (stages 5–6).
+- **RAG routes** with citations and `company_id`-scoped retrieval (stages 3–4).
+- **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches.
+- **Grafana**: L1/L2/miss rates, p95 latency, queue depth, **per-company** breakdown (`bcbs` vs `wells_fargo`).
+- **L1 implementation**: optional **GPTCache** or custom semantic layer over Redis if plain keys are insufficient; TTLs by doc type.
+- **Ingest API**: upload-driven re-ingest behind auth, enqueue to workers instead of blocking the API.
+- **Compliance**: data residency, key management, and model hosting choices documented for PHI.
 
 ## Tech stack
 
