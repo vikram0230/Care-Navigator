@@ -13,8 +13,9 @@ Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and ref
 The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), Gemini, ingestion, cache warming, and observability. The codebase today implements **Stages 1–2** only (API shell, Chroma + seed, Gemini for embeddings); L1/L2, RAG HTTP routes, and full Streamlit chat are **planned**.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryTextColor':'#111111','secondaryTextColor':'#1a1a1a','tertiaryTextColor':'#111111','lineColor':'#374151','textColor':'#111111','mainBkg':'#ffffff','nodeBorder':'#374151','clusterBkg':'#f3f4f6','clusterBorder':'#4b5563','titleColor':'#000000','edgeLabelBackground':'#ffffff','nodeTextColor':'#111111'}}}%%
 flowchart TD
-    User(["Employee\nBCBS employer or Wells Fargo employer"])
+    User(["Employee\nBCBS or Wells Fargo"])
 
     User --> UI
 
@@ -71,27 +72,27 @@ flowchart TD
 
     end
 
-    style DC   fill:#f8f9fa,stroke:#dee2e6,stroke-width:1px,stroke-dasharray:5 5
-    style REDIS  fill:#fff8e6,stroke:#f0c040,stroke-width:1px
-    style CHROMA fill:#e6f0ff,stroke:#4a90d9,stroke-width:1px
-    style INGEST fill:#e8f5e9,stroke:#66bb6a,stroke-width:1px
-    style OBS    fill:#f3e5f5,stroke:#ab47bc,stroke-width:1px
+    style DC     fill:#eef2f7,stroke:#1e293b,stroke-width:2px,stroke-dasharray:5 5,color:#0f172a
+    style REDIS  fill:#fff7ed,stroke:#9a3412,stroke-width:2px,color:#431407
+    style CHROMA fill:#eff6ff,stroke:#1d4ed8,stroke-width:2px,color:#1e3a5f
+    style INGEST fill:#f0fdf4,stroke:#15803d,stroke-width:2px,color:#14532d
+    style OBS    fill:#faf5ff,stroke:#7e22ce,stroke-width:2px,color:#3b0764
 
-    style User   fill:#e0e0e0,stroke:#9e9e9e,color:#212121
-    style UI     fill:#b2dfdb,stroke:#00897b,color:#004d40
-    style API    fill:#b2dfdb,stroke:#00897b,color:#004d40
-    style L1     fill:#ffe082,stroke:#f9a825,color:#4e342e
-    style L2     fill:#ffe082,stroke:#f9a825,color:#4e342e
-    style BROKER fill:#ffe082,stroke:#f9a825,color:#4e342e
-    style T1     fill:#90caf9,stroke:#1565c0,color:#0d2a5e
-    style T2A    fill:#90caf9,stroke:#1565c0,color:#0d2a5e
-    style T2B    fill:#90caf9,stroke:#1565c0,color:#0d2a5e
-    style WORKER fill:#ffab91,stroke:#e64a19,color:#3e0a00
-    style LLM    fill:#ffab91,stroke:#e64a19,color:#3e0a00
-    style PDF    fill:#a5d6a7,stroke:#2e7d32,color:#1b3a1b
-    style WARM   fill:#a5d6a7,stroke:#2e7d32,color:#1b3a1b
-    style PROM   fill:#ce93d8,stroke:#6a1b9a,color:#2a0033
-    style GRAF   fill:#ce93d8,stroke:#6a1b9a,color:#2a0033
+    style User   fill:#e5e7eb,stroke:#374151,stroke-width:2px,color:#111827
+    style UI     fill:#99f6e4,stroke:#0f766e,stroke-width:2px,color:#042f2e
+    style API    fill:#99f6e4,stroke:#0f766e,stroke-width:2px,color:#042f2e
+    style L1     fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#422006
+    style L2     fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#422006
+    style BROKER fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#422006
+    style T1     fill:#bfdbfe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+    style T2A    fill:#bfdbfe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+    style T2B    fill:#bfdbfe,stroke:#1d4ed8,stroke-width:2px,color:#1e3a8a
+    style WORKER fill:#fdba74,stroke:#c2410c,stroke-width:2px,color:#431407
+    style LLM    fill:#fdba74,stroke:#c2410c,stroke-width:2px,color:#431407
+    style PDF    fill:#bbf7d0,stroke:#166534,stroke-width:2px,color:#14532d
+    style WARM   fill:#bbf7d0,stroke:#166534,stroke-width:2px,color:#14532d
+    style PROM   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
+    style GRAF   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
 ```
 
 > **Implemented today:** FastAPI `/health` and `/metrics`, Compose (Redis, Chroma, API, Celery, Streamlit, Prometheus, Grafana), PDF → chunk → embed → upsert via `scripts/seed_documents.py`, and optional integration tests. The API **does not** call Chroma on user-facing routes yet—only ingestion and tests hit the vector store.
