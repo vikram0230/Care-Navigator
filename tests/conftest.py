@@ -13,6 +13,7 @@ os.environ.setdefault("LOG_LEVEL", "INFO")
 os.environ.setdefault("COMPANY_IDS", "bcbs,wells_fargo")
 
 from api.config import Settings, get_settings
+from api.deps import reset_chroma_singleton
 from api.main import app
 
 
@@ -26,6 +27,8 @@ class SettingsForTests(Settings):
 def client() -> Generator[TestClient, None, None]:
     """Provide a synchronous TestClient with lifespan hooks executed."""
     get_settings.cache_clear()
+    reset_chroma_singleton()
     with TestClient(app) as test_client:
         yield test_client
+    reset_chroma_singleton()
     get_settings.cache_clear()

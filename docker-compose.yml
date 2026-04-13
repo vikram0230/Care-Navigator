@@ -40,6 +40,25 @@ services:
     networks:
       - care-navigator
 
+  # Phase B: default dev backend — pull models after first start:
+  #   docker exec -it care-navigator-ollama ollama pull nomic-embed-text && ollama pull llama3.2
+  ollama:
+    image: ollama/ollama:latest
+    container_name: care-navigator-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      # Official image has no curl/wget; ``ollama list`` talks to the local daemon.
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - care-navigator
+
   api:
     build:
       context: .
@@ -48,7 +67,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
@@ -61,6 +82,8 @@ services:
       redis:
         condition: service_healthy
       chromadb:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -77,7 +100,9 @@ services:
       dockerfile: Dockerfile.worker
     container_name: care-navigator-celery
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
@@ -88,6 +113,8 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
       redis:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
       api:
         condition: service_healthy
@@ -121,7 +148,9 @@ services:
     ports:
       - "8501:8501"
     environment:
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
@@ -131,6 +160,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
     depends_on:
+      ollama:
+        condition: service_healthy
       api:
         condition: service_healthy
     healthcheck:
@@ -194,6 +225,7 @@ services:
 volumes:
   redis_data:
   chroma_data:
+  ollama_data:
   prometheus_data:
   grafana_data:
 

@@ -20,42 +20,46 @@ class Settings(BaseSettings):
         case_sensitive=True,
     )
 
-    GEMINI_API_KEY: str = Field(
-        default="",
-        description="Google Gemini API key (AI Studio) for embeddings and chat.",
+    OLLAMA_BASE_URL: str = Field(
+        default="http://localhost:11434",
+        description="Ollama HTTP API base URL.",
     )
-    GEMINI_CHAT_MODEL: str = Field(
-        default="gemini-2.0-flash",
-        description="Gemini model id for conversational RAG (e.g. gemini-2.0-flash).",
+    OLLAMA_EMBEDDING_MODEL: str = Field(
+        default="nomic-embed-text",
+        description="Ollama model for embeddings; pull with `ollama pull`.",
     )
-    GEMINI_EMBEDDING_MODEL: str = Field(
-        default="gemini-embedding-001",
-        description=(
-            "Gemini embedding model for RAG (e.g. gemini-embedding-001). "
-            "Legacy text-embedding-004 was retired from the API; see Gemini embeddings docs."
-        ),
+    OLLAMA_CHAT_MODEL: str = Field(
+        default="llama3.2",
+        description="Ollama model for RAG chat; pull with `ollama pull`.",
     )
     EMBEDDING_SUB_BATCH_SIZE: int = Field(
         default=50,
         ge=1,
         le=250,
-        description=(
-            "Texts per embedding API round-trip. Each LangChain batch can map to one HTTP "
-            "embed_content call; large PDFs need small batches + delay to avoid free-tier bursts."
-        ),
+        description="Max texts per embed_documents call; smaller batches ease memory load on Ollama.",
     )
     EMBEDDING_INTER_BATCH_DELAY_SECONDS: float = Field(
-        default=0.7,
+        default=0.2,
         ge=0.0,
-        description=(
-            "Seconds to sleep between embedding sub-batches (free tier: ~100 embed requests/minute)."
-        ),
+        description="Seconds to sleep between embedding sub-batches (gentle pacing for local Ollama).",
     )
-    EMBEDDING_RATE_LIMIT_MAX_RETRIES: int = Field(
+    RAG_TIER1_TOP_K: int = Field(
+        default=6,
+        ge=1,
+        le=50,
+        description="Max Chroma chunks to retrieve from shared global_tier1 per query.",
+    )
+    RAG_TIER2_TOP_K: int = Field(
+        default=6,
+        ge=1,
+        le=50,
+        description="Max Chroma chunks to retrieve from the employer tier-2 collection per query.",
+    )
+    RAG_MAX_CONTEXT_CHUNKS: int = Field(
         default=12,
         ge=1,
         le=50,
-        description="Retries per sub-batch when the provider returns 429 / RESOURCE_EXHAUSTED.",
+        description="Cap on chunks passed to the LLM after merging tier-1 and tier-2 hits.",
     )
     REDIS_URL: str = Field(
         default="redis://localhost:6379/0",

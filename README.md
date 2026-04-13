@@ -1,16 +1,16 @@
 # Care Navigator
 
-Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and reference PDFs into **ChromaDB**, embed with **Google Gemini**, and expose a **FastAPI** service with observability and worker hooks for future retrieval-augmented chat.
+Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and reference PDFs into **ChromaDB**, embed with **Ollama**, and expose a **FastAPI** service with observability and worker hooks for future retrieval-augmented chat.
 
 ## Goals
 
 - **Tenant-aware knowledge**: shared global content (tier 1) plus per-employer documents (tier 2), stored in separate Chroma collections.
 - **Production-shaped layout**: API, Redis, Celery worker, Streamlit shell, Prometheus, and Grafana in Docker Compose.
-- **Gemini-first**: chat and embeddings via `langchain-google-genai` and the `google-genai` SDK (not the deprecated `google.generativeai` path).
+- **Local LLM**: **Ollama** for embeddings and chat in Docker Compose, `.env.example`, and application code (Phase C: Google GenAI / Gemini removed).
 
 ## Reference architecture (target end-state)
 
-The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), Gemini, ingestion, cache warming, and observability. The codebase today implements **Stages 1–2** only (API shell, Chroma + seed, Gemini for embeddings); L1/L2, RAG HTTP routes, and full Streamlit chat are **planned**.
+The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–3** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama); L1/L2, full Streamlit chat, and cache warming remain **planned**.
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryTextColor':'#111111','secondaryTextColor':'#1a1a1a','tertiaryTextColor':'#111111','lineColor':'#374151','textColor':'#111111','mainBkg':'#ffffff','nodeBorder':'#374151','clusterBkg':'#f3f4f6','clusterBorder':'#4b5563','titleColor':'#000000','edgeLabelBackground':'#ffffff','nodeTextColor':'#111111'}}}%%
@@ -41,9 +41,9 @@ flowchart TD
         BROKER --> WORKER
 
         subgraph CHROMA["ChromaDB — multi-tenant collections"]
-            T1["global_tier1\nCDC · USPSTF · shared clinical reference\nAll employers"]
-            T2A["bcbs_tier2\nBCBS plan benefits and formulary"]
-            T2B["wells_fargo_tier2\nWells Fargo benefits · CVS formulary"]
+            T1["Shared medical reference\nPreventive care and screening guides\nSame for every employer"]
+            T2A["Blue Cross employer pack\nMedical plan and prescription list"]
+            T2B["Wells Fargo employer pack\nBenefits summary and prescription list"]
         end
 
         WORKER["Celery worker\nLLM and heavy tasks\nRetry on failure"]
@@ -51,7 +51,7 @@ flowchart TD
         CHROMA -->|"chunks plus context"| LLM
         WORKER --> LLM
 
-        LLM["Google Gemini\nEmbeddings and chat\nProd and HIPAA: see Production and compliance below"]
+        LLM["Ollama (or similar)\nEmbeddings and chat\nProd and HIPAA: see Production and compliance below"]
 
         LLM -->|"answer"| API
 
@@ -95,7 +95,7 @@ flowchart TD
     style GRAF   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
 ```
 
-> **Implemented today:** FastAPI `/health` and `/metrics`, Compose (Redis, Chroma, API, Celery, Streamlit, Prometheus, Grafana), PDF → chunk → embed → upsert via `scripts/seed_documents.py`, and optional integration tests. The API **does not** call Chroma on user-facing routes yet—only ingestion and tests hit the vector store.
+> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
 
 ### Component summary
 
@@ -107,7 +107,7 @@ flowchart TD
 | L2 cache | Redis | Chunk retrieval cache; skip Chroma on hit |
 | Queue | Redis + Celery | Async LLM and ingest tasks; rate limits |
 | Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (see `COMPANY_IDS` in config) |
-| LLM / embeddings | **Google Gemini** | Matches `api/gemini_client.py` and `GEMINI_*` settings |
+| LLM / embeddings | **Ollama** | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `OLLAMA_CHAT_MODEL`) |
 | Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`) |
 | Cache warming | Celery (planned) | Pre-warm L1 after upload; blue-green cache swap |
 | Monitoring | Prometheus + Grafana | Cache hit rate, latency p95, queue depth |
@@ -149,9 +149,9 @@ ChromaDB retrieval ──────────► full pipeline → cache res
 
 ## Future work
 
-- **Stages 3–7** (see roadmap below): RAG API, tenancy policy, Redis L1/L2, Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
+- **Stages 4–7** (see roadmap below): auth, metadata filters, Redis L1/L2, Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
 - Wire **L1/L2** and Celery tasks into FastAPI (stages 5–6).
-- **RAG routes** with citations and `company_id`-scoped retrieval (stages 3–4).
+- Extend **RAG** with optional metadata filters and authenticated tenant resolution (stage 4).
 - **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches.
 - **Grafana**: L1/L2/miss rates, p95 latency, queue depth, **per-company** breakdown (`bcbs` vs `wells_fargo`).
 - **L1 implementation**: optional **GPTCache** or custom semantic layer over Redis if plain keys are insufficient; TTLs by doc type.
@@ -163,12 +163,12 @@ ChromaDB retrieval ──────────► full pipeline → cache res
 | Area | Choice |
 |------|--------|
 | API | FastAPI, Uvicorn, Pydantic Settings |
-| LLM / embeddings | Gemini (`GEMINI_CHAT_MODEL`, `GEMINI_EMBEDDING_MODEL`) |
+| LLM / embeddings | **Ollama** (`api/llm_client.py`) |
 | Vectors | ChromaDB 0.5.x (HTTP client) |
-| Ingestion | LangChain text splitters, `pypdf`, `GoogleGenerativeAIEmbeddings` |
+| Ingestion | LangChain text splitters, `pypdf`, Ollama embeddings |
 | Workers | Celery + Redis |
 | UI (placeholder) | Streamlit — calls API `/health` only |
-| Tests | pytest (unit + optional Chroma/Gemini integration) |
+| Tests | pytest (unit + optional Chroma/Ollama integration) |
 
 Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 
@@ -176,13 +176,13 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 
 | Path | Purpose |
 |------|---------|
-| `api/` | FastAPI app, config, health routes, Gemini client factory |
+| `api/` | FastAPI app, config, deps, `llm_client.py` (Ollama), `routes/`, `schemas/`, `services/rag.py` |
 | `vectordb/` | Chroma client, collection naming, PDF ingestion pipeline |
 | `scripts/seed_documents.py` | CLI to create collections and ingest `data/seed/` PDFs |
 | `data/seed/` | Tier-1 global PDFs under `global/`; tier-2 PDFs per employer |
 | `workers/` | Celery application |
 | `ui/` | Streamlit entrypoint |
-| `tests/` | API tests, Gemini client tests, multitenancy / integration tests |
+| `tests/` | API tests, LLM client tests, multitenancy / integration tests |
 | `monitoring/prometheus.yml` | Prometheus scrape config for the API |
 
 ## Progress and roadmap (stages)
@@ -190,22 +190,33 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 | Stage | Status | Scope |
 |-------|--------|--------|
 | **1 — Foundation** | Done | FastAPI `/health`, `/metrics`, CORS, Dockerfiles, Compose (Redis, Chroma, API, Celery, Streamlit shell, Prometheus, Grafana); minimal Celery app |
-| **2 — Vector DB and seed** | Done | Chroma HTTP client, collection naming (`global_tier1`, `{company}_tier2`), PDF → chunk → embed → upsert, `seed_documents.py`, embedding rate limits / retries, pytest + optional Chroma/Gemini integration tests |
-| **3 — RAG API** | Planned | Routes: embed user query, query Chroma with tenant + tier rules, assemble context, call Gemini, return answer + citations; OpenAPI docs |
-| **4 — Tenancy and policy** | Planned | Request `company_id` / user context validation against `COMPANY_IDS`, metadata filters (e.g. doc_type, plan_year), guardrails for cross-tenant leakage |
+| **2 — Vector DB and seed** | Done | Chroma HTTP client, collection naming (`global_tier1`, `{company}_tier2`), PDF → chunk → embed → upsert, `seed_documents.py`, embedding sub-batching + inter-batch delay for Ollama, pytest + optional Chroma/Ollama integration tests |
+| **3 — RAG API** | Done | `POST /rag/query`: embed question, retrieve from `global_tier1` + `{company_id}_tier2`, merge by distance, answer + citations via **Ollama**; OpenAPI under `/docs` |
+| **4 — Tenancy and policy** | Planned | Auth / SSO, metadata filters (e.g. doc_type, plan_year), stronger guardrails; today `company_id` is validated against `COMPANY_IDS` only |
 | **5 — Caching** | Planned | Redis: session or conversation state, optional embedding cache, optional answer cache with TTL and invalidation on re-ingest |
 | **6 — Async operations** | Planned | Celery tasks: large/batch ingest, reindex, optional webhooks; API enqueues work instead of blocking on big PDFs |
 | **7 — Product UI** | Planned | Streamlit: tenant selection, chat thread, rendered citations / sources, aligned with the RAG API (replaces health-only placeholder) |
 
-Embedding ingestion today uses **sub-batching, delays, and 429 retries** for Gemini free tier (see `EMBEDDING_*` in `api/config.py`).
+Embedding ingestion uses **sub-batching** and an optional **inter-batch delay** (`EMBEDDING_SUB_BATCH_SIZE`, `EMBEDDING_INTER_BATCH_DELAY_SECONDS` in `api/config.py`) to avoid hammering local Ollama on large PDFs.
+
+## LLM (Phase C — Ollama only)
+
+The stack uses **Ollama** for embeddings and chat everywhere (ingest, RAG, tests that hit a real model). There is no `LLM_PROVIDER` switch and no Google GenAI dependency.
+
+- **`OLLAMA_BASE_URL`:** `http://ollama:11434` in Compose, `http://localhost:11434` on the host when talking to a local daemon.
+- **`OLLAMA_EMBEDDING_MODEL`** / **`OLLAMA_CHAT_MODEL`:** must match pulled models. After the first `docker compose up`, for example:  
+  `docker exec -it care-navigator-ollama ollama pull nomic-embed-text && docker exec -it care-navigator-ollama ollama pull llama3.2`  
+  The **ollama** service has a healthcheck (`ollama list`); API / worker / Streamlit **wait for it** before starting.
+
+**Important:** Changing the embedding model requires **re-ingesting** Chroma (`scripts/seed_documents.py --reset …`).
 
 ## Quick start (Docker Compose)
 
-1. Copy environment template and set your Gemini key:
+1. Copy environment template and set Ollama/Chroma URLs if needed:
 
    ```bash
    cp .env.example .env
-   # Edit .env: GEMINI_API_KEY=... (and fix any invalid .env lines so python-dotenv does not warn)
+   # Pull models after containers are up — see LLM section above.
    ```
 
 2. Start the stack:
@@ -223,7 +234,7 @@ Embedding ingestion today uses **sub-batching, delays, and 429 retries** for Gem
    - Grafana: [http://localhost:3000](http://localhost:3000)
    - Chroma (mapped from container 8000): **host port 8001** (see below)
 
-Compose sets `CHROMA_HOST=chromadb` and port `8000` inside the network. On the host, Chroma is published as **8001 → 8000**.
+Compose sets `CHROMA_HOST=chromadb` and port `8000` inside the network. On the host, Chroma is published as **8001 → 8000**. Ollama is on **11434**.
 
 ## Local Python (without full Compose)
 
@@ -250,7 +261,7 @@ Compose sets `CHROMA_HOST=chromadb` and port `8000` inside the network. On the h
 
 ## Seeding Chroma
 
-Requires `GEMINI_API_KEY` and a reachable Chroma instance.
+Requires a reachable Chroma instance and **Ollama** URL + embedding model (same variables as the API).
 
 ```bash
 # Default: one small global PDF (fewer embed calls)
@@ -271,10 +282,10 @@ python scripts/seed_documents.py --reset --full
 ## Tests
 
 ```bash
-# Fast suite (no live Chroma/Gemini)
+# Fast suite (no live Chroma/Ollama)
 pytest tests/ -m "not integration"
 
-# Integration: requires Chroma, seed data, and GEMINI_API_KEY
+# Integration: requires Chroma, seed data, and Ollama (reachable from host for embed)
 RUN_CHROMA_INTEGRATION=1 pytest tests/test_multitenancy.py -m integration -q
 ```
 
@@ -284,7 +295,9 @@ After seeding, you can confirm row counts and sample documents via the Chroma cl
 
 ## Configuration
 
-See [`.env.example`](.env.example) for variables: Gemini keys and models, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, and embedding throttle settings (`EMBEDDING_SUB_BATCH_SIZE`, `EMBEDDING_INTER_BATCH_DELAY_SECONDS`, `EMBEDDING_RATE_LIMIT_MAX_RETRIES`).
+See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), and optional RAG limits (`RAG_TIER1_TOP_K`, etc.).
+
+**RAG HTTP:** `POST /rag/query` with JSON `{"question": "...", "company_id": "bcbs"}` (or `wells_fargo`). Responses include `answer` and `citations`. Requires seeded Chroma and Ollama configured (`OLLAMA_*`).
 
 ## License / data
 

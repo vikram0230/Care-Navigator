@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from api.config import get_settings
-from api.gemini_client import get_gemini_embeddings
+from api.llm_client import get_embedding_model
 from vectordb.chroma_client import get_chroma_client
 from vectordb.collections import (
     GLOBAL_TIER1,
@@ -56,7 +56,6 @@ def test_get_collection_rejects_unknown_company() -> None:
     """Tier 2 lookups validate ``company_id`` against ``COMPANY_IDS``."""
     settings = SettingsForTests(
         COMPANY_IDS="bcbs,wells_fargo",
-        GEMINI_API_KEY="dummy",
     )
     fake_client = MagicMock()
     with pytest.raises(ValueError, match="Unknown company_id"):
@@ -69,7 +68,7 @@ def test_get_collection_rejects_unknown_company() -> None:
 def chroma_seeded_environment() -> Dict[str, Any]:
     """Reset Chroma, run ``seed_documents.py``, and return client helpers.
 
-    Skips unless ``RUN_CHROMA_INTEGRATION`` is truthy and ``GEMINI_API_KEY`` is set.
+    Skips unless ``RUN_CHROMA_INTEGRATION`` is truthy and Ollama settings are available.
     """
     if os.environ.get("RUN_CHROMA_INTEGRATION", "").strip().lower() not in (
         "1",
@@ -79,18 +78,21 @@ def chroma_seeded_environment() -> Dict[str, Any]:
     ):
         pytest.skip("Set RUN_CHROMA_INTEGRATION=1 to run Chroma integration tests")
 
-    # Resolve secrets from the same source as the app (``.env`` via pydantic-settings),
-    # not only ``os.environ`` — developers often keep GEMINI_API_KEY in ``.env`` only.
+    # Resolve settings from the same source as the app (``.env`` via pydantic-settings),
+    # not only ``os.environ``.
     get_settings.cache_clear()
     settings = get_settings()
-    if not settings.GEMINI_API_KEY.strip():
+    if not settings.OLLAMA_BASE_URL.strip() or not settings.OLLAMA_EMBEDDING_MODEL.strip():
         pytest.skip(
-            "GEMINI_API_KEY is required for embedding; set it in .env or the environment",
+            "OLLAMA_BASE_URL and OLLAMA_EMBEDDING_MODEL are required for embedding; "
+            "set them in .env or the environment",
         )
 
     env = os.environ.copy()
     env.setdefault("ENVIRONMENT", "development")
-    env["GEMINI_API_KEY"] = settings.GEMINI_API_KEY
+    env["OLLAMA_BASE_URL"] = settings.OLLAMA_BASE_URL
+    env["OLLAMA_EMBEDDING_MODEL"] = settings.OLLAMA_EMBEDDING_MODEL
+    env["OLLAMA_CHAT_MODEL"] = settings.OLLAMA_CHAT_MODEL
     env["CHROMA_HOST"] = settings.CHROMA_HOST
     env["CHROMA_PORT"] = str(settings.CHROMA_PORT)
     env["COMPANY_IDS"] = settings.COMPANY_IDS
@@ -120,7 +122,7 @@ def chroma_seeded_environment() -> Dict[str, Any]:
         )
 
     client = get_chroma_client(settings)
-    embeddings = get_gemini_embeddings(settings)
+    embeddings = get_embedding_model(settings)
     return {"client": client, "settings": settings, "embeddings": embeddings}
 
 

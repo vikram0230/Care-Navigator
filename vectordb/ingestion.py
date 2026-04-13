@@ -1,15 +1,10 @@
 """PDF chunking, embedding, and ChromaDB upsert for multi-tenant RAG."""
 
 import logging
-import re
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
-
-# Google free tier counts one ``embed_content`` HTTP call per batch; LangChain issues one call
-# per internal batch (up to 100 texts). A single large PDF can therefore trigger 100+ calls in
-# seconds if we embed all chunks in one ``embed_documents`` — not “many files”, one document.
 
 from chromadb import ClientAPI
 from chromadb.errors import ChromaError
@@ -23,28 +18,6 @@ from vectordb.collections import collection_name
 logger = logging.getLogger(__name__)
 
 
-def _is_embedding_rate_limited(exc: BaseException) -> bool:
-    """Return True if the exception indicates Gemini / Google embedding quota or 429."""
-    text = str(exc).lower()
-    return (
-        "429" in text
-        or "resource_exhausted" in text
-        or "quota" in text
-        or ("rate" in text and "limit" in text)
-    )
-
-
-def _retry_after_seconds_from_error(exc: BaseException) -> Optional[float]:
-    """Parse ``retry in Ns`` from Google error payloads when present."""
-    match = re.search(r"retry in ([\d.]+)\s*s", str(exc), flags=re.IGNORECASE)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
 def _string_metadata(meta: Mapping[str, Any]) -> Dict[str, str]:
     """Coerce metadata values to strings for Chroma compatibility."""
     out: Dict[str, str] = {}
@@ -56,7 +29,7 @@ def _string_metadata(meta: Mapping[str, Any]) -> Dict[str, str]:
 
 
 class PDFIngestionPipeline:
-    """Load PDFs, split text, embed with Gemini (or any LangChain embeddings), and store."""
+    """Load PDFs, split text, embed with a LangChain ``Embeddings`` implementation, and store."""
 
     def __init__(
         self,
@@ -66,25 +39,22 @@ class PDFIngestionPipeline:
         chunk_overlap: int = 50,
         *,
         embedding_sub_batch_size: int = 50,
-        embedding_inter_batch_delay_seconds: float = 0.7,
-        embedding_rate_limit_max_retries: int = 12,
+        embedding_inter_batch_delay_seconds: float = 0.2,
     ) -> None:
         """Initialize splitter and retain clients for ingestion.
 
         Args:
             chroma_client: Connected Chroma HTTP client.
-            embeddings: LangChain ``Embeddings`` implementation (e.g. Gemini).
+            embeddings: LangChain ``Embeddings`` implementation (e.g. ``OllamaEmbeddings``).
             chunk_size: Target maximum chunk length in characters.
             chunk_overlap: Overlap between consecutive chunks.
-            embedding_sub_batch_size: Max texts per ``embed_documents`` call (maps to HTTP batches).
-            embedding_inter_batch_delay_seconds: Pause between sub-batches to respect provider RPM.
-            embedding_rate_limit_max_retries: Retries when a sub-batch returns 429 / quota errors.
+            embedding_sub_batch_size: Max texts per ``embed_documents`` call.
+            embedding_inter_batch_delay_seconds: Pause between sub-batches (eases load on local Ollama).
         """
         self._client = chroma_client
         self._embeddings = embeddings
         self._embed_sub_batch_size = max(1, embedding_sub_batch_size)
         self._embed_inter_batch_delay_seconds = max(0.0, embedding_inter_batch_delay_seconds)
-        self._embed_rate_limit_max_retries = max(1, embedding_rate_limit_max_retries)
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -142,39 +112,16 @@ class PDFIngestionPipeline:
         for start in range(0, len(chunks), sub):
             end = min(start + sub, len(chunks))
             batch = chunks[start:end]
-            attempt = 0
-            while True:
+            try:
+                embed = self._embeddings.embed_documents
                 try:
-                    # Google GenAI: ``batch_size=len(batch)`` → one HTTP ``embed_content`` per slice.
-                    # Base ``Embeddings`` protocol has no ``batch_size``; fall back if unsupported.
-                    embed = self._embeddings.embed_documents
-                    try:
-                        part = embed(batch, batch_size=len(batch))  # type: ignore[call-arg]
-                    except TypeError:
-                        part = embed(batch)
-                    vectors.extend(part)
-                    break
-                except Exception as exc:
-                    if (
-                        _is_embedding_rate_limited(exc)
-                        and attempt < self._embed_rate_limit_max_retries
-                    ):
-                        wait = _retry_after_seconds_from_error(exc)
-                        if wait is None:
-                            wait = min(60.0, 2.0 ** attempt)
-                        logger.warning(
-                            "Embedding sub-batch %s-%s rate limited; sleeping %.1fs (attempt %s/%s)",
-                            start,
-                            end,
-                            wait,
-                            attempt + 1,
-                            self._embed_rate_limit_max_retries,
-                        )
-                        time.sleep(wait)
-                        attempt += 1
-                        continue
-                    logger.exception("Embedding failed for collection %s", collection_name_str)
-                    raise RuntimeError("Embedding request failed") from exc
+                    part = embed(batch, batch_size=len(batch))  # type: ignore[call-arg]
+                except TypeError:
+                    part = embed(batch)
+                vectors.extend(part)
+            except Exception as exc:
+                logger.exception("Embedding failed for collection %s", collection_name_str)
+                raise RuntimeError("Embedding request failed") from exc
             if end < len(chunks) and self._embed_inter_batch_delay_seconds > 0:
                 time.sleep(self._embed_inter_batch_delay_seconds)
         if len(vectors) != len(chunks):

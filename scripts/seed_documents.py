@@ -15,7 +15,7 @@ if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
 from api.config import Settings, get_settings
-from api.gemini_client import get_gemini_embeddings
+from api.llm_client import get_embedding_model
 from vectordb.chroma_client import get_chroma_client
 from vectordb.collections import create_collections
 from vectordb.ingestion import PDFIngestionPipeline
@@ -139,8 +139,10 @@ def run_ingestion(reset_chroma: bool, *, full: bool) -> Dict[str, int]:
         Mapping of logical label (e.g. ``tier1:adult-combined-schedule.pdf``) to chunk count.
     """
     settings = get_settings()
-    if not settings.GEMINI_API_KEY.strip():
-        raise ValueError("GEMINI_API_KEY is required for embedding during seed ingestion")
+    if not settings.OLLAMA_BASE_URL.strip():
+        raise ValueError("OLLAMA_BASE_URL is required for seed ingestion")
+    if not settings.OLLAMA_EMBEDDING_MODEL.strip():
+        raise ValueError("OLLAMA_EMBEDDING_MODEL is required for seed ingestion")
 
     if full:
         tier1_jobs, tier2_jobs = _resolve_specs(settings)
@@ -162,13 +164,12 @@ def run_ingestion(reset_chroma: bool, *, full: bool) -> Dict[str, int]:
         client.reset()
 
     create_collections(client, settings)
-    embeddings = get_gemini_embeddings(settings)
+    embeddings = get_embedding_model(settings)
     pipeline = PDFIngestionPipeline(
         client,
         embeddings,
         embedding_sub_batch_size=settings.EMBEDDING_SUB_BATCH_SIZE,
         embedding_inter_batch_delay_seconds=settings.EMBEDDING_INTER_BATCH_DELAY_SECONDS,
-        embedding_rate_limit_max_retries=settings.EMBEDDING_RATE_LIMIT_MAX_RETRIES,
     )
 
     counts: Dict[str, int] = {}

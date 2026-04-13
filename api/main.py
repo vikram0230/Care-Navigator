@@ -3,7 +3,7 @@
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Dict, List
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -13,7 +13,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.config import get_settings
-from api.routes import health
+from api.deps import reset_chroma_singleton
+from api.routes import health, rag
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("Care Navigator API shutting down")
+        reset_chroma_singleton()
         get_settings.cache_clear()
 
 
 app = FastAPI(
     title="Care Navigator API",
-    description="Multi-tenant RAG-powered health benefits Q&A (Stage 1 foundation).",
-    version="0.1.0",
+    description="Multi-tenant RAG-powered health benefits Q&A (Stages 1–3: health, metrics, RAG query).",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -69,6 +71,19 @@ instrumentator.instrument(app)
 instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
 
 app.include_router(health.router)
+app.include_router(rag.router)
+
+
+def _json_safe_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Make Pydantic validation errors JSON-serializable (``ctx`` may hold exceptions)."""
+    safe: List[Dict[str, Any]] = []
+    for err in errors:
+        item = dict(err)
+        ctx = item.get("ctx")
+        if isinstance(ctx, dict):
+            item["ctx"] = {k: str(v) for k, v in ctx.items()}
+        safe.append(item)
+    return safe
 
 
 @app.exception_handler(RequestValidationError)
@@ -82,7 +97,7 @@ async def validation_exception_handler(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         content={
             "detail": "Request validation failed",
-            "errors": exc.errors(),
+            "errors": _json_safe_validation_errors(exc.errors()),
         },
     )
 
