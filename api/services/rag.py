@@ -11,7 +11,7 @@ from chromadb import ClientAPI
 from chromadb.errors import ChromaError
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from api.cache import (
     answer_cache_key,
@@ -24,7 +24,7 @@ from api.cache import (
 from api.config import Settings
 from api.llm_client import get_chat_model, get_embedding_model
 from api.rag_filters import chroma_where_for_rag_filters
-from api.schemas.rag import RagCitation, RagQueryResponse
+from api.schemas.rag import ConversationTurn, RagCitation, RagQueryResponse
 from vectordb.collections import get_collection
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,21 @@ def _merge_hits(tier1_hits: List[_Hit], tier2_hits: List[_Hit], cap: int) -> Lis
     return merged[:cap]
 
 
+def _history_messages(
+    history: Optional[List[ConversationTurn]],
+    max_turns: int,
+) -> List[BaseMessage]:
+    """Replay the most recent ``max_turns`` prior turns as plain Human/AI message pairs."""
+    if not history or max_turns <= 0:
+        return []
+    kept = history[-max_turns:]
+    messages: List[BaseMessage] = []
+    for turn in kept:
+        messages.append(HumanMessage(content=turn.question))
+        messages.append(AIMessage(content=turn.answer))
+    return messages
+
+
 def _build_context_and_citations(hits: List[_Hit]) -> tuple[str, List[RagCitation]]:
     """Build prompt context and citations for the chunks that fit within the char budget."""
     parts: List[str] = []
@@ -143,12 +158,18 @@ def run_rag_query(
     company_id: str,
     filter_doc_types: Optional[List[str]] = None,
     filter_plan_years: Optional[List[str]] = None,
+    conversation_history: Optional[List[ConversationTurn]] = None,
     redis_client: Optional["redis.Redis"] = None,
 ) -> RagQueryResponse:
     """Embed ``question``, retrieve from global tier 1 and employer tier 2, then call the chat model.
 
     Stage 5: when ``redis_client`` is provided, an exact-match answer cache and a
     question-embedding cache are consulted (both fail open on Redis errors).
+
+    Stage 7: ``conversation_history`` (most recent ``settings.RAG_MAX_CONVERSATION_TURNS``
+    turns) is replayed into the prompt so follow-up questions are contextual. A non-empty
+    history always bypasses the answer cache — the same question text can mean something
+    different mid-conversation.
 
     Raises:
         ValueError: Unknown ``company_id``, failed question validation, or missing Ollama configuration.
@@ -163,7 +184,9 @@ def run_rag_query(
 
     _validate_rag_question(question)
 
-    use_answer_cache = settings.RAG_ANSWER_CACHE_ENABLED and redis_client is not None
+    use_answer_cache = (
+        settings.RAG_ANSWER_CACHE_ENABLED and redis_client is not None and not conversation_history
+    )
     use_embedding_cache = settings.RAG_EMBEDDING_CACHE_ENABLED and redis_client is not None
 
     answer_key: Optional[str] = None
@@ -212,8 +235,9 @@ def run_rag_query(
         f"Context passages:\n{context_block}\n\n"
         f"Employee question (company tenant: {cid}):\n{question.strip()}"
     )
-    messages = [
+    messages: List[BaseMessage] = [
         SystemMessage(content=_SYSTEM_PROMPT),
+        *_history_messages(conversation_history, settings.RAG_MAX_CONVERSATION_TURNS),
         HumanMessage(content=user_content),
     ]
     try:

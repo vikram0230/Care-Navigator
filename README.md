@@ -1,6 +1,6 @@
 # Care Navigator
 
-Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and reference PDFs into **ChromaDB**, embed with **Ollama**, and expose a **FastAPI** service with observability and worker hooks for future retrieval-augmented chat.
+Multi-tenant RAG system for **health benefits Q&A**: ingest employer and reference PDFs into **ChromaDB**, embed with **Ollama**, and expose a **FastAPI** service — with Redis caching, async Celery ingest, and a Streamlit chat UI with conversation memory — behind observability.
 
 ## Goals
 
@@ -10,7 +10,7 @@ Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and ref
 
 ## Reference architecture (target end-state)
 
-The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–6** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama, optional API keys, metadata filters, question guardrails, Redis answer + embedding cache, async Celery ingest with PDF upload and webhooks); full Streamlit chat and cache warming remain **planned**. The Stage 5 cache is **exact-match**, not the diagram's fuzzy/semantic (>0.95 similarity) L1 — see the note under [Progress and roadmap](#progress-and-roadmap-stages).
+The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **all 7 stages** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama, optional API keys, metadata filters, question guardrails, Redis answer + embedding cache, async Celery ingest with PDF upload and webhooks, Streamlit chat UI with conversation memory and an ingest panel); only cache warming, semantic/fuzzy L1 matching, L2 chunk-retrieval caching, and LLM-queue rate limiting remain **planned** (see [Future work](#future-work)). The Stage 5 cache is **exact-match**, not the diagram's fuzzy/semantic (>0.95 similarity) L1 — see the note under [Progress and roadmap](#progress-and-roadmap-stages).
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryTextColor':'#111111','secondaryTextColor':'#1a1a1a','tertiaryTextColor':'#111111','lineColor':'#374151','textColor':'#111111','mainBkg':'#ffffff','nodeBorder':'#374151','clusterBkg':'#f3f4f6','clusterBorder':'#4b5563','titleColor':'#000000','edgeLabelBackground':'#ffffff','nodeTextColor':'#111111'}}}%%
@@ -95,14 +95,14 @@ flowchart TD
     style GRAF   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
 ```
 
-> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, a Redis exact-match answer + embedding cache (Stage 5), async Celery ingest with PDF upload and status polling (Stage 6), and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
+> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** with conversation memory (Stages 3, 7), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, a Redis exact-match answer + embedding cache (Stage 5), async Celery ingest with PDF upload and status polling (Stage 6), a Streamlit chat UI with citations and an ingest panel (Stage 7), and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
 
 ### Component summary
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| UI | Streamlit | Company switcher, chat, cache hit indicator (planned beyond Stage 1 shell) |
-| API | FastAPI + LangChain | RAG pipeline, tenant isolation, conversation memory |
+| UI | Streamlit (`ui/app.py`, `ui/api_client.py`) | Tenant switcher, chat thread with citations and cache-hit badge, ingest panel (upload/reseed/status) |
+| API | FastAPI + LangChain | RAG pipeline, tenant isolation, **conversation memory** (`conversation_history`, bounded by `RAG_MAX_CONVERSATION_TURNS`; bypasses the Stage 5 answer cache on any follow-up turn) |
 | L1 cache | Redis (`api/cache.py`) | **Exact-match** answer cache, TTL-based (`RAG_ANSWER_CACHE_TTL_SECONDS`), invalidated on re-ingest. Semantic/fuzzy (>0.95 similarity) matching is still **planned** |
 | L2 cache | Redis (`api/cache.py`) | Question **embedding** cache (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) — avoids re-embedding identical question text. Chunk-retrieval caching (skip Chroma on hit) remains **planned** |
 | Queue | Redis + Celery | **Ingest** tasks (`workers/ingest_tasks.py`) run async via Celery (Stage 6): PDF upload and bundled reseed. LLM invocation inside `POST /rag/query` is still synchronous; rate limiting is still **planned** |
@@ -151,7 +151,8 @@ Today's L1/L2 are **exact-match** (`api/cache.py`), keyed by normalized question
 
 ## Future work
 
-- **Stage 7** (see roadmap below): full Streamlit chat with citations and cache-hit UI.
+All 7 roadmap stages are done. What's left is scoped-down or explicitly deferred work noted throughout each stage's row below:
+
 - **Semantic (fuzzy) answer cache**: Stage 5 shipped an **exact-match** Redis cache only. Upgrading the L1 answer cache to fuzzy/semantic matching (>0.95 cosine similarity, per the architecture diagram) needs a vector index over past cached questions and similarity-threshold tuning — tracked as a follow-up, not yet implemented. Optional **GPTCache** or a custom semantic layer over Redis remains the likely approach.
 - **L2 chunk-retrieval cache**: cache Chroma hits directly (skip vector search on hit), separate from the Stage 5 embedding cache which only avoids re-embedding.
 - **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches (Stage 6 already invalidates stale answer-cache entries on ingest — pre-warming the replacements is still planned).
@@ -169,8 +170,8 @@ Today's L1/L2 are **exact-match** (`api/cache.py`), keyed by normalized question
 | Vectors | ChromaDB 0.5.x (HTTP client) |
 | Ingestion | LangChain text splitters, `pypdf`, Ollama embeddings |
 | Workers | Celery + Redis |
-| UI (placeholder) | Streamlit — calls API `/health` only |
-| Tests | pytest (unit + optional Chroma/Ollama integration) |
+| UI | Streamlit — chat with conversation memory, citations, ingest panel (`ui/app.py`, `ui/api_client.py`) |
+| Tests | pytest (unit + optional Chroma/Ollama integration); `streamlit.testing.v1.AppTest` for the UI |
 
 Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 
@@ -185,7 +186,8 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 | `data/uploads/` | Runtime storage for `POST /ingest/upload` (shared Compose volume `uploads_data`); gitignored |
 | `workers/` | Celery application (`celery_app.py`) and Stage 6 async tasks (`ingest_tasks.py`) |
 | `api/routes/ingest.py`, `api/schemas/ingest.py` | Stage 6 async ingest HTTP surface: upload, reseed, status polling |
-| `ui/` | Streamlit entrypoint |
+| `ui/app.py` | Streamlit entrypoint: sidebar tenant/filter controls, Chat tab, Ingest tab |
+| `ui/api_client.py` | Stage 7 pure HTTP helpers the UI calls (no Streamlit imports; unit-testable in isolation) |
 | `tests/` | API tests, LLM client tests, multitenancy / integration tests |
 | `monitoring/prometheus.yml` | Prometheus scrape config for the API |
 
@@ -199,7 +201,7 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 | **4 — Tenancy and policy** | Done | Optional **API keys** (`RAG_API_KEYS` + `Authorization: Bearer` or `X-API-Key`); Chroma **`filter_doc_types`** / **`filter_plan_years`** on retrieval; **question validation** and stronger system prompt (benefits scope, prompt-injection resistance); `company_id` still validated against `COMPANY_IDS`. Full **SSO/OIDC** is not implemented yet—swap the auth helper or add middleware when you wire an IdP. |
 | **5 — Caching** | Done (exact-match) | Redis **answer cache** (`api/cache.py`, keyed by company + normalized question + filters + model names, TTL via `RAG_ANSWER_CACHE_TTL_SECONDS`, invalidated per-company at the end of `scripts/seed_documents.py` ingestion) and **embedding cache** (keyed by model + question text, TTL via `RAG_EMBEDDING_CACHE_TTL_SECONDS`); both fail open if Redis is unreachable. **Not yet implemented:** semantic/fuzzy similarity matching (the diagram's >0.95 cosine L1), L2 chunk-retrieval caching, and session/conversation state (deferred to Stage 7 when the API gains conversation memory) |
 | **6 — Async operations** | Done | Celery tasks (`workers/ingest_tasks.py`): `ingest_pdf_task` (chunk/embed/store one uploaded PDF, invalidate affected answer caches) and `reseed_task` (wraps `scripts/seed_documents.py run_ingestion`). HTTP surface (`api/routes/ingest.py`, gated by a dedicated **`INGEST_API_KEYS`**, independent of `RAG_API_KEYS`): `POST /ingest/upload` (multipart PDF, saved to a shared Docker volume, streamed to disk with an `INGEST_MAX_UPLOAD_MB` cap, filename sanitized against path traversal), `POST /ingest/reseed`, and `GET /ingest/status/{task_id}` for polling. Optional best-effort `webhook_url` completion/failure notification (no SSRF hardening — see Future work) |
-| **7 — Product UI** | Planned | Streamlit: tenant selection, chat thread, rendered citations / sources, aligned with the RAG API (replaces health-only placeholder) |
+| **7 — Product UI** | Done | Streamlit (`ui/app.py` + `ui/api_client.py`): tenant selector, chat thread with rendered citations and a cache-hit badge, "Clear conversation"; **conversation memory** added to `POST /rag/query` itself (`conversation_history`, threaded into the LLM prompt, bounded by `RAG_MAX_CONVERSATION_TURNS`, bypasses the Stage 5 answer cache on follow-ups) so multi-turn chat is contextual, not just displayed history. Also includes a basic **Ingest tab** (upload PDF / trigger reseed / poll status) using the Stage 6 endpoints — beyond the original bullet's scope. UI auth (`STREAMLIT_RAG_API_KEY`, `STREAMLIT_INGEST_API_KEY`) is server-side env vars only, no key input in the browser |
 
 Embedding ingestion uses **sub-batching** and an optional **inter-batch delay** (`EMBEDDING_SUB_BATCH_SIZE`, `EMBEDDING_INTER_BATCH_DELAY_SECONDS` in `api/config.py`) to avoid hammering local Ollama on large PDFs.
 
@@ -299,22 +301,25 @@ After seeding, you can confirm row counts and sample documents via the Chroma cl
 
 ## Configuration
 
-See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (Stage 4 gate for `POST /rag/query`), optional RAG limits (`RAG_TIER1_TOP_K`, etc.), Stage 5 caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`), and Stage 6 async ingest (`INGEST_API_KEYS`, `INGEST_UPLOAD_DIR`, `INGEST_MAX_UPLOAD_MB`, `INGEST_WEBHOOK_TIMEOUT_SECONDS`).
+See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (Stage 4 gate for `POST /rag/query`), optional RAG limits (`RAG_TIER1_TOP_K`, etc.), Stage 5 caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`), Stage 6 async ingest (`INGEST_API_KEYS`, `INGEST_UPLOAD_DIR`, `INGEST_MAX_UPLOAD_MB`, `INGEST_WEBHOOK_TIMEOUT_SECONDS`), and Stage 7 (`RAG_MAX_CONVERSATION_TURNS`, `API_BASE_URL`, `STREAMLIT_RAG_API_KEY`, `STREAMLIT_INGEST_API_KEY`).
 
 **RAG HTTP:** `POST /rag/query` with JSON body, for example:
 
 ```json
 {
-  "question": "What is my deductible?",
+  "question": "What about out-of-network coverage?",
   "company_id": "bcbs",
   "filter_doc_types": ["benefits"],
-  "filter_plan_years": ["2025"]
+  "filter_plan_years": ["2025"],
+  "conversation_history": [
+    {"question": "What is my deductible?", "answer": "Your deductible is $500."}
+  ]
 }
 ```
 
-`filter_doc_types` and `filter_plan_years` are optional; when present, each restricts Chroma hits to chunks whose metadata matches (same filter applies to tier 1 and tier 2). If `RAG_API_KEYS` is set in the environment, send `Authorization: Bearer <token>` or `X-API-Key: <token>` with one of the comma-separated keys.
+`filter_doc_types` and `filter_plan_years` are optional; when present, each restricts Chroma hits to chunks whose metadata matches (same filter applies to tier 1 and tier 2). `conversation_history` is optional (Stage 7): prior Q&A turns, oldest first, threaded into the LLM prompt so follow-ups are contextual; trimmed server-side to the most recent `RAG_MAX_CONVERSATION_TURNS` regardless of how many are sent. **A non-empty `conversation_history` always bypasses the Stage 5 exact-match answer cache** — the same question text can mean something different mid-conversation, so caching by question text alone would risk returning a stale/wrong answer. If `RAG_API_KEYS` is set in the environment, send `Authorization: Bearer <token>` or `X-API-Key: <token>` with one of the comma-separated keys.
 
-Responses include `answer`, `citations`, and `cache_hit` (Stage 5: `true` when served from the Redis exact-match answer cache instead of a fresh Chroma + Ollama round trip). Requires seeded Chroma and Ollama configured (`OLLAMA_*`); Redis is optional — if unreachable, caching is silently skipped and every request runs the full pipeline.
+Responses include `answer`, `citations`, and `cache_hit` (Stage 5: `true` when served from the Redis exact-match answer cache instead of a fresh Chroma + Ollama round trip — always `false` when the request included `conversation_history`). Requires seeded Chroma and Ollama configured (`OLLAMA_*`); Redis is optional — if unreachable, caching is silently skipped and every request runs the full pipeline.
 
 ## Async ingest (Stage 6)
 
@@ -351,6 +356,15 @@ curl http://localhost:8000/ingest/status/<task_id> -H "X-API-Key: <INGEST_API_KE
 ```
 
 `state` is one of `PENDING`, `STARTED`, `SUCCESS`, `FAILURE`, `RETRY`. Both request bodies accept an optional `webhook_url`; on completion the worker POSTs a JSON payload (`{"event": "ingest.completed" | "reseed.completed", "task_id": ..., "status": "success" | "failed", ...}`) to it, best-effort with no retries. Ingest tasks also invalidate the Stage 5 answer cache for every affected `company_id` (all configured companies for a tier-1 upload, since tier-1 content is merged into every tenant's answers; just the one company for tier-2).
+
+## Using the chat UI (Stage 7)
+
+`docker compose up streamlit` (or the full stack) serves it at [http://localhost:8501](http://localhost:8501); for a host-run instance, `streamlit run ui/app.py` after `pip install -r requirements.txt`, with `API_BASE_URL` pointed at wherever the API is reachable (`http://localhost:8000` for a host-run API).
+
+- **Sidebar:** API base URL, tenant (`company_id`) selector sourced from the `COMPANY_IDS` env var, optional `doc_type`/`plan_year` filters.
+- **Chat tab:** ask a question via `st.chat_input`; each turn is sent to `POST /rag/query` along with the visible conversation so far (see `conversation_history` above), so follow-ups are contextual. Answers render with a citations expander and a "served from cache" badge when `cache_hit` is true. "Clear conversation" resets the thread client-side (does not affect server-side caching).
+- **Ingest tab:** upload a PDF (calls `POST /ingest/upload`), trigger a bundled reseed (`POST /ingest/reseed`), and poll a `task_id`'s status (`GET /ingest/status/{task_id}`) — a thin UI over the Stage 6 endpoints.
+- **Auth:** if `RAG_API_KEYS` / `INGEST_API_KEYS` are configured on the API, set `STREAMLIT_RAG_API_KEY` / `STREAMLIT_INGEST_API_KEY` (one token each, matching one of the API's comma-separated values) so the UI attaches them automatically — there is no key input field in the browser by design.
 
 ## License / data
 

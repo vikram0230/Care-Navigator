@@ -65,6 +65,7 @@ async def rag_query(request: Request, body: RagQueryRequest) -> RagQueryResponse
             company_id=body.company_id,
             filter_doc_types=body.filter_doc_types,
             filter_plan_years=body.filter_plan_years,
+            conversation_history=body.conversation_history,
             redis_client=redis_client,
         )
     except ValueError as exc:

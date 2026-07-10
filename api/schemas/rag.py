@@ -1,8 +1,15 @@
-"""Pydantic models for RAG HTTP API (Stages 3–4)."""
+"""Pydantic models for RAG HTTP API (Stages 3–4, 7)."""
 
 from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class ConversationTurn(BaseModel):
+    """One prior Q&A pair, replayed into the LLM prompt for conversational context (Stage 7)."""
+
+    question: str = Field(..., min_length=1, max_length=4000, description="A prior user question.")
+    answer: str = Field(..., min_length=1, max_length=8000, description="The assistant's prior answer.")
 
 
 class RagQueryRequest(BaseModel):
@@ -32,6 +39,15 @@ class RagQueryRequest(BaseModel):
         None,
         max_length=16,
         description="Optional metadata filter: only chunks whose ``plan_year`` is one of these values.",
+    )
+    conversation_history: Optional[List[ConversationTurn]] = Field(
+        None,
+        max_length=30,
+        description=(
+            "Stage 7: prior turns in this conversation, oldest first. Threaded into the LLM "
+            "prompt (trimmed server-side to RAG_MAX_CONVERSATION_TURNS) so follow-up questions "
+            "are contextual. A non-empty history bypasses the Stage 5 exact-match answer cache."
+        ),
     )
 
     @field_validator("question")

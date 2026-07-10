@@ -86,6 +86,17 @@ class Settings(BaseSettings):
         ge=0,
         description="TTL for cached question embeddings.",
     )
+    RAG_MAX_CONVERSATION_TURNS: int = Field(
+        default=6,
+        ge=0,
+        le=30,
+        description=(
+            "Stage 7: max prior Q&A turns threaded into the LLM prompt from "
+            "conversation_history (most recent kept). A non-empty history bypasses "
+            "the Stage 5 answer cache since the same question can mean something "
+            "different mid-conversation."
+        ),
+    )
     INGEST_API_KEYS: str = Field(
         default="",
         description=(

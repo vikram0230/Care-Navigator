@@ -177,6 +177,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       RAG_API_KEYS: ${RAG_API_KEYS:-}
+      API_BASE_URL: http://api:8000
+      STREAMLIT_RAG_API_KEY: ${STREAMLIT_RAG_API_KEY:-}
+      STREAMLIT_INGEST_API_KEY: ${STREAMLIT_INGEST_API_KEY:-}
     depends_on:
       ollama:
         condition: service_healthy

@@ -124,6 +124,43 @@ def test_rag_query_passes_redis_client_to_service(
     assert kwargs.get("redis_client") is fake_redis
 
 
+def test_rag_query_accepts_conversation_history(
+    client: TestClient,
+) -> None:
+    """A valid conversation_history is accepted and forwarded to the service."""
+    stub = RagQueryResponse(answer="stub", citations=[])
+    with patch("api.routes.rag.asyncio.to_thread", new_callable=AsyncMock, return_value=stub) as mock_to_thread:
+        response = client.post(
+            "/rag/query",
+            json={
+                "question": "And my copay?",
+                "company_id": "bcbs",
+                "conversation_history": [
+                    {"question": "What is my deductible?", "answer": "Your deductible is $500."},
+                ],
+            },
+        )
+    assert response.status_code == 200
+    _, kwargs = mock_to_thread.call_args
+    history = kwargs.get("conversation_history")
+    assert history is not None
+    assert history[0].question == "What is my deductible?"
+    assert history[0].answer == "Your deductible is $500."
+
+
+def test_rag_query_rejects_malformed_conversation_turn(client: TestClient) -> None:
+    """A history turn missing 'answer' fails validation with 422."""
+    response = client.post(
+        "/rag/query",
+        json={
+            "question": "And my copay?",
+            "company_id": "bcbs",
+            "conversation_history": [{"question": "What is my deductible?"}],
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_rag_query_rejects_null_byte_question(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
