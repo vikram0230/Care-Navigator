@@ -67,7 +67,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
@@ -78,6 +78,11 @@ services:
       COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      RAG_API_KEYS: ${RAG_API_KEYS:-}
+      RAG_ANSWER_CACHE_ENABLED: ${RAG_ANSWER_CACHE_ENABLED:-true}
+      RAG_ANSWER_CACHE_TTL_SECONDS: ${RAG_ANSWER_CACHE_TTL_SECONDS:-3600}
+      RAG_EMBEDDING_CACHE_ENABLED: ${RAG_EMBEDDING_CACHE_ENABLED:-true}
+      RAG_EMBEDDING_CACHE_TTL_SECONDS: ${RAG_EMBEDDING_CACHE_TTL_SECONDS:-86400}
     depends_on:
       redis:
         condition: service_healthy
@@ -100,7 +105,7 @@ services:
       dockerfile: Dockerfile.worker
     container_name: care-navigator-celery
     environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
@@ -111,6 +116,7 @@ services:
       COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      RAG_API_KEYS: ${RAG_API_KEYS:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -148,7 +154,7 @@ services:
     ports:
       - "8501:8501"
     environment:
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
@@ -159,6 +165,7 @@ services:
       COMPANY_IDS: ${COMPANY_IDS:-bcbs,wells_fargo}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
+      RAG_API_KEYS: ${RAG_API_KEYS:-}
     depends_on:
       ollama:
         condition: service_healthy

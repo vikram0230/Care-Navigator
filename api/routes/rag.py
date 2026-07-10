@@ -4,10 +4,11 @@ import asyncio
 import logging
 
 from chromadb.errors import ChromaError
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 
+from api.auth import check_rag_api_key
 from api.config import Settings, get_settings
-from api.deps import get_chroma_singleton
+from api.deps import get_chroma_singleton, get_redis_singleton
 from api.schemas.rag import RagQueryRequest, RagQueryResponse
 from api.services.rag import run_rag_query
 
@@ -35,9 +36,16 @@ def _require_llm_configured(settings: Settings) -> None:
     response_model=RagQueryResponse,
     summary="Ask a benefits question (RAG)",
     status_code=status.HTTP_200_OK,
+    responses={
+        401: {"description": "Missing or invalid API key when RAG_API_KEYS is configured."},
+    },
 )
-async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
+async def rag_query(request: Request, body: RagQueryRequest) -> RagQueryResponse:
     """Retrieve relevant chunks from global + employer collections and generate an answer."""
+    check_rag_api_key(
+        request.headers.get("authorization"),
+        request.headers.get("x-api-key"),
+    )
     settings = get_settings()
     cid = body.company_id.strip()
     if cid not in settings.company_id_list:
@@ -48,16 +56,25 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
     _require_llm_configured(settings)
     try:
         chroma = get_chroma_singleton()
+        redis_client = get_redis_singleton()
         return await asyncio.to_thread(
             run_rag_query,
             chroma_client=chroma,
             settings=settings,
             question=body.question,
             company_id=body.company_id,
+            filter_doc_types=body.filter_doc_types,
+            filter_plan_years=body.filter_plan_years,
+            redis_client=redis_client,
         )
     except ValueError as exc:
         msg = str(exc)
         if "Unknown company_id" in msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=msg,
+            ) from exc
+        if msg.startswith("Question failed validation:"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=msg,
@@ -79,9 +96,10 @@ async def rag_query(body: RagQueryRequest) -> RagQueryResponse:
         ) from exc
     except ConnectionError as exc:
         logger.exception("Chroma connection error during RAG query")
+        detail = str(exc).strip() or "Could not reach vector store"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Could not reach vector store",
+            detail=detail,
         ) from exc
     except RuntimeError as exc:
         logger.exception("LLM error during RAG query")

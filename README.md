@@ -10,7 +10,7 @@ Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and ref
 
 ## Reference architecture (target end-state)
 
-The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–3** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama); L1/L2, full Streamlit chat, and cache warming remain **planned**.
+The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–5** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama, optional API keys, metadata filters, question guardrails, Redis answer + embedding cache); full Streamlit chat and cache warming remain **planned**. The Stage 5 cache is **exact-match**, not the diagram's fuzzy/semantic (>0.95 similarity) L1 — see the note under [Progress and roadmap](#progress-and-roadmap-stages).
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryTextColor':'#111111','secondaryTextColor':'#1a1a1a','tertiaryTextColor':'#111111','lineColor':'#374151','textColor':'#111111','mainBkg':'#ffffff','nodeBorder':'#374151','clusterBkg':'#f3f4f6','clusterBorder':'#4b5563','titleColor':'#000000','edgeLabelBackground':'#ffffff','nodeTextColor':'#111111'}}}%%
@@ -95,7 +95,7 @@ flowchart TD
     style GRAF   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
 ```
 
-> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
+> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, a Redis exact-match answer + embedding cache (Stage 5), and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
 
 ### Component summary
 
@@ -103,8 +103,8 @@ flowchart TD
 |-----------|------------|---------|
 | UI | Streamlit | Company switcher, chat, cache hit indicator (planned beyond Stage 1 shell) |
 | API | FastAPI + LangChain | RAG pipeline, tenant isolation, conversation memory |
-| L1 cache | Redis (planned; optional GPTCache-style semantic layer) | Semantic answer cache, TTL by document type |
-| L2 cache | Redis | Chunk retrieval cache; skip Chroma on hit |
+| L1 cache | Redis (`api/cache.py`) | **Exact-match** answer cache, TTL-based (`RAG_ANSWER_CACHE_TTL_SECONDS`), invalidated on re-ingest. Semantic/fuzzy (>0.95 similarity) matching is still **planned** |
+| L2 cache | Redis (`api/cache.py`) | Question **embedding** cache (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) — avoids re-embedding identical question text. Chunk-retrieval caching (skip Chroma on hit) remains **planned** |
 | Queue | Redis + Celery | Async LLM and ingest tasks; rate limits |
 | Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (see `COMPANY_IDS` in config) |
 | LLM / embeddings | **Ollama** | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `OLLAMA_CHAT_MODEL`) |
@@ -112,24 +112,26 @@ flowchart TD
 | Cache warming | Celery (planned) | Pre-warm L1 after upload; blue-green cache swap |
 | Monitoring | Prometheus + Grafana | Cache hit rate, latency p95, queue depth |
 
-### Cache check order (planned)
+### Cache check order
 
 ```
 Query arrives
     │
     ▼
-L1 semantic cache ──── HIT ──► return answer instantly
+L1 answer cache (exact-match) ─ HIT ──► return cached answer instantly (cache_hit=true)
     │
     MISS
     │
     ▼
-L2 chunk cache ──────── HIT ──► skip ChromaDB, call LLM only
-    │
-    MISS
-    │
-    ▼
-ChromaDB retrieval ──────────► full pipeline → cache result in L1 + L2
+L2 embedding cache (exact-match) ─ HIT ──► reuse cached vector, skip Ollama embed call
+    │                                          │
+    MISS                                       │
+    │                                          │
+    ▼                                          ▼
+Ollama embeds the question ──────────► ChromaDB retrieval → Ollama chat → cache in L1
 ```
+
+Today's L1/L2 are **exact-match** (`api/cache.py`), keyed by normalized question text (+ filters + model names for L1). The diagram's fuzzy/semantic L1 (>0.95 cosine similarity) and a chunk-level L2 (skip ChromaDB entirely on hit) remain **planned** — see [Future work](#future-work).
 
 **Tenants in seed data:** Default `COMPANY_IDS` are `bcbs` and `wells_fargo`. Add employers via `scripts/seed_documents.py` (`TIER2_SEED_FILES`) and `COMPANY_IDS`.
 
@@ -149,12 +151,12 @@ ChromaDB retrieval ──────────► full pipeline → cache res
 
 ## Future work
 
-- **Stages 4–7** (see roadmap below): auth, metadata filters, Redis L1/L2, Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
-- Wire **L1/L2** and Celery tasks into FastAPI (stages 5–6).
-- Extend **RAG** with optional metadata filters and authenticated tenant resolution (stage 4).
+- **Stages 6–7** (see roadmap below): Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
+- **Semantic (fuzzy) answer cache**: Stage 5 shipped an **exact-match** Redis cache only. Upgrading the L1 answer cache to fuzzy/semantic matching (>0.95 cosine similarity, per the architecture diagram) needs a vector index over past cached questions and similarity-threshold tuning — tracked as a follow-up, not yet implemented. Optional **GPTCache** or a custom semantic layer over Redis remains the likely approach.
+- **L2 chunk-retrieval cache**: cache Chroma hits directly (skip vector search on hit), separate from the Stage 5 embedding cache which only avoids re-embedding.
+- Wire Celery tasks into FastAPI (stage 6).
 - **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches.
 - **Grafana**: L1/L2/miss rates, p95 latency, queue depth, **per-company** breakdown (`bcbs` vs `wells_fargo`).
-- **L1 implementation**: optional **GPTCache** or custom semantic layer over Redis if plain keys are insufficient; TTLs by doc type.
 - **Ingest API**: upload-driven re-ingest behind auth, enqueue to workers instead of blocking the API.
 - **Compliance**: data residency, key management, and model hosting choices documented for PHI.
 
@@ -192,8 +194,8 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 | **1 — Foundation** | Done | FastAPI `/health`, `/metrics`, CORS, Dockerfiles, Compose (Redis, Chroma, API, Celery, Streamlit shell, Prometheus, Grafana); minimal Celery app |
 | **2 — Vector DB and seed** | Done | Chroma HTTP client, collection naming (`global_tier1`, `{company}_tier2`), PDF → chunk → embed → upsert, `seed_documents.py`, embedding sub-batching + inter-batch delay for Ollama, pytest + optional Chroma/Ollama integration tests |
 | **3 — RAG API** | Done | `POST /rag/query`: embed question, retrieve from `global_tier1` + `{company_id}_tier2`, merge by distance, answer + citations via **Ollama**; OpenAPI under `/docs` |
-| **4 — Tenancy and policy** | Planned | Auth / SSO, metadata filters (e.g. doc_type, plan_year), stronger guardrails; today `company_id` is validated against `COMPANY_IDS` only |
-| **5 — Caching** | Planned | Redis: session or conversation state, optional embedding cache, optional answer cache with TTL and invalidation on re-ingest |
+| **4 — Tenancy and policy** | Done | Optional **API keys** (`RAG_API_KEYS` + `Authorization: Bearer` or `X-API-Key`); Chroma **`filter_doc_types`** / **`filter_plan_years`** on retrieval; **question validation** and stronger system prompt (benefits scope, prompt-injection resistance); `company_id` still validated against `COMPANY_IDS`. Full **SSO/OIDC** is not implemented yet—swap the auth helper or add middleware when you wire an IdP. |
+| **5 — Caching** | Done (exact-match) | Redis **answer cache** (`api/cache.py`, keyed by company + normalized question + filters + model names, TTL via `RAG_ANSWER_CACHE_TTL_SECONDS`, invalidated per-company at the end of `scripts/seed_documents.py` ingestion) and **embedding cache** (keyed by model + question text, TTL via `RAG_EMBEDDING_CACHE_TTL_SECONDS`); both fail open if Redis is unreachable. **Not yet implemented:** semantic/fuzzy similarity matching (the diagram's >0.95 cosine L1), L2 chunk-retrieval caching, and session/conversation state (deferred to Stage 7 when the API gains conversation memory) |
 | **6 — Async operations** | Planned | Celery tasks: large/batch ingest, reindex, optional webhooks; API enqueues work instead of blocking on big PDFs |
 | **7 — Product UI** | Planned | Streamlit: tenant selection, chat thread, rendered citations / sources, aligned with the RAG API (replaces health-only placeholder) |
 
@@ -295,9 +297,22 @@ After seeding, you can confirm row counts and sample documents via the Chroma cl
 
 ## Configuration
 
-See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), and optional RAG limits (`RAG_TIER1_TOP_K`, etc.).
+See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (Stage 4 gate for `POST /rag/query`), optional RAG limits (`RAG_TIER1_TOP_K`, etc.), and Stage 5 caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`).
 
-**RAG HTTP:** `POST /rag/query` with JSON `{"question": "...", "company_id": "bcbs"}` (or `wells_fargo`). Responses include `answer` and `citations`. Requires seeded Chroma and Ollama configured (`OLLAMA_*`).
+**RAG HTTP:** `POST /rag/query` with JSON body, for example:
+
+```json
+{
+  "question": "What is my deductible?",
+  "company_id": "bcbs",
+  "filter_doc_types": ["benefits"],
+  "filter_plan_years": ["2025"]
+}
+```
+
+`filter_doc_types` and `filter_plan_years` are optional; when present, each restricts Chroma hits to chunks whose metadata matches (same filter applies to tier 1 and tier 2). If `RAG_API_KEYS` is set in the environment, send `Authorization: Bearer <token>` or `X-API-Key: <token>` with one of the comma-separated keys.
+
+Responses include `answer`, `citations`, and `cache_hit` (Stage 5: `true` when served from the Redis exact-match answer cache instead of a fresh Chroma + Ollama round trip). Requires seeded Chroma and Ollama configured (`OLLAMA_*`); Redis is optional — if unreachable, caching is silently skipped and every request runs the full pipeline.
 
 ## License / data
 

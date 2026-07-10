@@ -14,6 +14,9 @@ _root_str = str(REPO_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
 
+import redis
+
+from api.cache import invalidate_company_answer_cache
 from api.config import Settings, get_settings
 from api.llm_client import get_embedding_model
 from vectordb.chroma_client import get_chroma_client
@@ -127,6 +130,28 @@ def _resolve_minimal_specs() -> Tuple[List[Tuple[Path, str, str]], List[Tuple[st
     return [(path, doc_type, "2025")], []
 
 
+def _invalidate_answer_caches(settings: Settings) -> None:
+    """Flush Stage 5 cached answers for every tenant after a (re-)ingest.
+
+    Blanket per-company flush regardless of whether tier 1 or tier 2 changed,
+    since tier-1 content is merged into every company's answers. A cache-flush
+    failure must never fail the ingest run, so Redis errors are logged and
+    swallowed here.
+    """
+    try:
+        client = redis.Redis.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        for company_id in settings.company_id_list:
+            removed = invalidate_company_answer_cache(client, company_id)
+            logger.info("Invalidated %s cached answer(s) for company_id=%s", removed, company_id)
+    except redis.exceptions.RedisError:
+        logger.warning("Could not reach Redis to invalidate answer caches after ingest", exc_info=True)
+
+
 def run_ingestion(reset_chroma: bool, *, full: bool) -> Dict[str, int]:
     """Ensure collections exist and ingest PDFs (minimal one-file or full manifest).
 
@@ -197,6 +222,8 @@ def run_ingestion(reset_chroma: bool, *, full: bool) -> Dict[str, int]:
         )
         counts[label] = n
         logger.info("Ingested tier-2 %s / %s (%s chunks)", company_id, path.name, n)
+
+    _invalidate_answer_caches(settings)
 
     return counts
 

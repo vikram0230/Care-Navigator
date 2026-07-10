@@ -13,7 +13,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.config import get_settings
-from api.deps import reset_chroma_singleton
+from api.deps import reset_chroma_singleton, reset_redis_singleton
 from api.routes import health, rag
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         logger.info("Care Navigator API shutting down")
         reset_chroma_singleton()
+        reset_redis_singleton()
         get_settings.cache_clear()
 
 
 app = FastAPI(
     title="Care Navigator API",
-    description="Multi-tenant RAG-powered health benefits Q&A (Stages 1–3: health, metrics, RAG query).",
-    version="0.2.0",
+    description=(
+        "Multi-tenant RAG-powered health benefits Q&A "
+        "(Stages 1–5: health, metrics, RAG, tenancy/policy, Redis caching)."
+    ),
+    version="0.4.0",
     lifespan=lifespan,
 )
 

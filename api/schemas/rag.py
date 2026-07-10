@@ -1,4 +1,4 @@
-"""Pydantic models for RAG HTTP API (Stage 3)."""
+"""Pydantic models for RAG HTTP API (Stages 3–4)."""
 
 from typing import List, Optional
 
@@ -20,6 +20,19 @@ class RagQueryRequest(BaseModel):
         max_length=128,
         description="Tenant id (must appear in COMPANY_IDS); tier-1 global docs are always included.",
     )
+    filter_doc_types: Optional[List[str]] = Field(
+        None,
+        max_length=16,
+        description=(
+            "Optional metadata filter: only chunks whose ``doc_type`` is one of these values "
+            "(e.g. benefits, formulary, guidelines)."
+        ),
+    )
+    filter_plan_years: Optional[List[str]] = Field(
+        None,
+        max_length=16,
+        description="Optional metadata filter: only chunks whose ``plan_year`` is one of these values.",
+    )
 
     @field_validator("question")
     @classmethod
@@ -33,6 +46,22 @@ class RagQueryRequest(BaseModel):
     @classmethod
     def company_id_stripped(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("filter_doc_types")
+    @classmethod
+    def filter_doc_types_normalized(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if not value:
+            return None
+        out = [v.strip() for v in value if v and str(v).strip()]
+        return out or None
+
+    @field_validator("filter_plan_years")
+    @classmethod
+    def filter_plan_years_normalized(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        if not value:
+            return None
+        out = [v.strip() for v in value if v and str(v).strip()]
+        return out or None
 
 
 class RagCitation(BaseModel):
@@ -61,4 +90,8 @@ class RagQueryResponse(BaseModel):
     citations: List[RagCitation] = Field(
         default_factory=list,
         description="Chunks fed into the model, in the same order as [1], [2], … in the prompt.",
+    )
+    cache_hit: bool = Field(
+        False,
+        description="True when served from the Stage 5 exact-match Redis answer cache.",
     )

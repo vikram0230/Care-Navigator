@@ -61,6 +61,31 @@ class Settings(BaseSettings):
         le=50,
         description="Cap on chunks passed to the LLM after merging tier-1 and tier-2 hits.",
     )
+    RAG_API_KEYS: str = Field(
+        default="",
+        description=(
+            "Comma-separated API tokens. When non-empty, POST /rag/query requires "
+            "Authorization: Bearer <token> or X-API-Key header matching one of these values."
+        ),
+    )
+    RAG_ANSWER_CACHE_ENABLED: bool = Field(
+        default=True,
+        description="Stage 5: exact-match Redis cache for full RAG answers (fails open if Redis is down).",
+    )
+    RAG_ANSWER_CACHE_TTL_SECONDS: int = Field(
+        default=3600,
+        ge=0,
+        description="TTL for cached answers; invalidated early on re-ingest (see scripts/seed_documents.py).",
+    )
+    RAG_EMBEDDING_CACHE_ENABLED: bool = Field(
+        default=True,
+        description="Stage 5: Redis cache for question embeddings, keyed by embedding model + text.",
+    )
+    RAG_EMBEDDING_CACHE_TTL_SECONDS: int = Field(
+        default=86400,
+        ge=0,
+        description="TTL for cached question embeddings.",
+    )
     REDIS_URL: str = Field(
         default="redis://localhost:6379/0",
         description="Redis URL for caching and optional session storage.",
@@ -123,6 +148,11 @@ class Settings(BaseSettings):
     def company_id_list(self) -> List[str]:
         """Parse COMPANY_IDS into a list of non-empty strings."""
         return [c.strip() for c in self.COMPANY_IDS.split(",") if c.strip()]
+
+    @property
+    def rag_api_key_set(self) -> set[str]:
+        """Non-empty API keys from ``RAG_API_KEYS``."""
+        return {k.strip() for k in self.RAG_API_KEYS.split(",") if k.strip()}
 
 
 @lru_cache
