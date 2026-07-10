@@ -86,6 +86,31 @@ class Settings(BaseSettings):
         ge=0,
         description="TTL for cached question embeddings.",
     )
+    INGEST_API_KEYS: str = Field(
+        default="",
+        description=(
+            "Comma-separated tokens gating POST /ingest/* (separate from RAG_API_KEYS since "
+            "ingest is a write/admin capability). Same header options as RAG_API_KEYS."
+        ),
+    )
+    INGEST_UPLOAD_DIR: str = Field(
+        default="data/uploads",
+        description=(
+            "Directory where uploaded PDFs are written before a Celery task ingests them. "
+            "Must be a shared volume in Compose so the celery-worker container can read it."
+        ),
+    )
+    INGEST_MAX_UPLOAD_MB: int = Field(
+        default=25,
+        ge=1,
+        le=200,
+        description="Max accepted PDF upload size for POST /ingest/upload.",
+    )
+    INGEST_WEBHOOK_TIMEOUT_SECONDS: float = Field(
+        default=5.0,
+        ge=0.5,
+        description="Timeout for the best-effort webhook POST fired on ingest task completion.",
+    )
     REDIS_URL: str = Field(
         default="redis://localhost:6379/0",
         description="Redis URL for caching and optional session storage.",
@@ -153,6 +178,11 @@ class Settings(BaseSettings):
     def rag_api_key_set(self) -> set[str]:
         """Non-empty API keys from ``RAG_API_KEYS``."""
         return {k.strip() for k in self.RAG_API_KEYS.split(",") if k.strip()}
+
+    @property
+    def ingest_api_key_set(self) -> set[str]:
+        """Non-empty API keys from ``INGEST_API_KEYS``."""
+        return {k.strip() for k in self.INGEST_API_KEYS.split(",") if k.strip()}
 
 
 @lru_cache

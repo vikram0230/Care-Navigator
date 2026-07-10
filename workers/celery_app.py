@@ -30,7 +30,7 @@ def _build_celery() -> Celery:
         "care_navigator",
         broker=broker,
         backend=backend,
-        include=[],
+        include=["workers.ingest_tasks"],
     )
     app.conf.update(
         task_serializer="json",

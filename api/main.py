@@ -14,7 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.config import get_settings
 from api.deps import reset_chroma_singleton, reset_redis_singleton
-from api.routes import health, rag
+from api.routes import health, ingest, rag
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +51,9 @@ app = FastAPI(
     title="Care Navigator API",
     description=(
         "Multi-tenant RAG-powered health benefits Q&A "
-        "(Stages 1–5: health, metrics, RAG, tenancy/policy, Redis caching)."
+        "(Stages 1–6: health, metrics, RAG, tenancy/policy, Redis caching, async Celery ingest)."
     ),
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -76,6 +76,7 @@ instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
 
 app.include_router(health.router)
 app.include_router(rag.router)
+app.include_router(ingest.router)
 
 
 def _json_safe_validation_errors(errors: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

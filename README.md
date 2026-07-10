@@ -10,7 +10,7 @@ Multi-tenant RAG foundation for **health benefits Q&A**: ingest employer and ref
 
 ## Reference architecture (target end-state)
 
-The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–5** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama, optional API keys, metadata filters, question guardrails, Redis answer + embedding cache); full Streamlit chat and cache warming remain **planned**. The Stage 5 cache is **exact-match**, not the diagram's fuzzy/semantic (>0.95 similarity) L1 — see the note under [Progress and roadmap](#progress-and-roadmap-stages).
+The diagram below is the **portfolio target**: L1/L2 Redis caches, Celery, multi-tenant Chroma (`global_tier1`, `bcbs_tier2`, `wells_fargo_tier2`), a local or hosted LLM, ingestion, cache warming, and observability. The codebase today implements **Stages 1–6** (API shell, Chroma + seed, **`POST /rag/query`**, Ollama, optional API keys, metadata filters, question guardrails, Redis answer + embedding cache, async Celery ingest with PDF upload and webhooks); full Streamlit chat and cache warming remain **planned**. The Stage 5 cache is **exact-match**, not the diagram's fuzzy/semantic (>0.95 similarity) L1 — see the note under [Progress and roadmap](#progress-and-roadmap-stages).
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryTextColor':'#111111','secondaryTextColor':'#1a1a1a','tertiaryTextColor':'#111111','lineColor':'#374151','textColor':'#111111','mainBkg':'#ffffff','nodeBorder':'#374151','clusterBkg':'#f3f4f6','clusterBorder':'#4b5563','titleColor':'#000000','edgeLabelBackground':'#ffffff','nodeTextColor':'#111111'}}}%%
@@ -95,7 +95,7 @@ flowchart TD
     style GRAF   fill:#e9d5ff,stroke:#6b21a8,stroke-width:2px,color:#3b0764
 ```
 
-> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, a Redis exact-match answer + embedding cache (Stage 5), and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
+> **Implemented today:** FastAPI `/health`, `/metrics`, **`POST /rag/query`** (Stage 3), Compose stack, PDF → chunk → embed → upsert via `scripts/seed_documents.py`, a Redis exact-match answer + embedding cache (Stage 5), async Celery ingest with PDF upload and status polling (Stage 6), and optional integration tests. RAG reads Chroma (`global_tier1` + employer tier 2) and calls **Ollama**; configure `OLLAMA_*`, Chroma host/port, and seed data for end-to-end use.
 
 ### Component summary
 
@@ -105,10 +105,10 @@ flowchart TD
 | API | FastAPI + LangChain | RAG pipeline, tenant isolation, conversation memory |
 | L1 cache | Redis (`api/cache.py`) | **Exact-match** answer cache, TTL-based (`RAG_ANSWER_CACHE_TTL_SECONDS`), invalidated on re-ingest. Semantic/fuzzy (>0.95 similarity) matching is still **planned** |
 | L2 cache | Redis (`api/cache.py`) | Question **embedding** cache (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) — avoids re-embedding identical question text. Chunk-retrieval caching (skip Chroma on hit) remains **planned** |
-| Queue | Redis + Celery | Async LLM and ingest tasks; rate limits |
+| Queue | Redis + Celery | **Ingest** tasks (`workers/ingest_tasks.py`) run async via Celery (Stage 6): PDF upload and bundled reseed. LLM invocation inside `POST /rag/query` is still synchronous; rate limiting is still **planned** |
 | Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (see `COMPANY_IDS` in config) |
 | LLM / embeddings | **Ollama** | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `OLLAMA_CHAT_MODEL`) |
-| Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`) |
+| Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`); reachable async via `POST /ingest/upload` and `POST /ingest/reseed` (Stage 6) |
 | Cache warming | Celery (planned) | Pre-warm L1 after upload; blue-green cache swap |
 | Monitoring | Prometheus + Grafana | Cache hit rate, latency p95, queue depth |
 
@@ -151,13 +151,13 @@ Today's L1/L2 are **exact-match** (`api/cache.py`), keyed by normalized question
 
 ## Future work
 
-- **Stages 6–7** (see roadmap below): Celery ingest/reindex, full Streamlit chat with citations and cache-hit UI.
+- **Stage 7** (see roadmap below): full Streamlit chat with citations and cache-hit UI.
 - **Semantic (fuzzy) answer cache**: Stage 5 shipped an **exact-match** Redis cache only. Upgrading the L1 answer cache to fuzzy/semantic matching (>0.95 cosine similarity, per the architecture diagram) needs a vector index over past cached questions and similarity-threshold tuning — tracked as a follow-up, not yet implemented. Optional **GPTCache** or a custom semantic layer over Redis remains the likely approach.
 - **L2 chunk-retrieval cache**: cache Chroma hits directly (skip vector search on hit), separate from the Stage 5 embedding cache which only avoids re-embedding.
-- Wire Celery tasks into FastAPI (stage 6).
-- **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches.
+- **Cache warming** after PDF upload or bulk re-ingest; **green → blue** promotion for caches (Stage 6 already invalidates stale answer-cache entries on ingest — pre-warming the replacements is still planned).
 - **Grafana**: L1/L2/miss rates, p95 latency, queue depth, **per-company** breakdown (`bcbs` vs `wells_fargo`).
-- **Ingest API**: upload-driven re-ingest behind auth, enqueue to workers instead of blocking the API.
+- **Webhook hardening**: Stage 6's `webhook_url` on `POST /ingest/upload` / `POST /ingest/reseed` is a single best-effort POST from an already-authenticated ingest-key holder — it is **not** validated against internal/private IP ranges (no SSRF defenses) and has no retry/backoff. Acceptable for this dev-stage project; worth hardening before a real deployment.
+- **LLM task queue**: Stage 6 only made ingestion async — `POST /rag/query` still calls Ollama synchronously in-request; queuing LLM calls through Celery (with the diagram's rate limiting) remains planned.
 - **Compliance**: data residency, key management, and model hosting choices documented for PHI.
 
 ## Tech stack
@@ -180,9 +180,11 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 |------|---------|
 | `api/` | FastAPI app, config, deps, `llm_client.py` (Ollama), `routes/`, `schemas/`, `services/rag.py` |
 | `vectordb/` | Chroma client, collection naming, PDF ingestion pipeline |
-| `scripts/seed_documents.py` | CLI to create collections and ingest `data/seed/` PDFs |
+| `scripts/seed_documents.py` | CLI to create collections and ingest `data/seed/` PDFs; also invoked async by `reseed_task` |
 | `data/seed/` | Tier-1 global PDFs under `global/`; tier-2 PDFs per employer |
-| `workers/` | Celery application |
+| `data/uploads/` | Runtime storage for `POST /ingest/upload` (shared Compose volume `uploads_data`); gitignored |
+| `workers/` | Celery application (`celery_app.py`) and Stage 6 async tasks (`ingest_tasks.py`) |
+| `api/routes/ingest.py`, `api/schemas/ingest.py` | Stage 6 async ingest HTTP surface: upload, reseed, status polling |
 | `ui/` | Streamlit entrypoint |
 | `tests/` | API tests, LLM client tests, multitenancy / integration tests |
 | `monitoring/prometheus.yml` | Prometheus scrape config for the API |
@@ -196,7 +198,7 @@ Python **3.12** is expected (see `requirements.txt` / Dockerfile notes).
 | **3 — RAG API** | Done | `POST /rag/query`: embed question, retrieve from `global_tier1` + `{company_id}_tier2`, merge by distance, answer + citations via **Ollama**; OpenAPI under `/docs` |
 | **4 — Tenancy and policy** | Done | Optional **API keys** (`RAG_API_KEYS` + `Authorization: Bearer` or `X-API-Key`); Chroma **`filter_doc_types`** / **`filter_plan_years`** on retrieval; **question validation** and stronger system prompt (benefits scope, prompt-injection resistance); `company_id` still validated against `COMPANY_IDS`. Full **SSO/OIDC** is not implemented yet—swap the auth helper or add middleware when you wire an IdP. |
 | **5 — Caching** | Done (exact-match) | Redis **answer cache** (`api/cache.py`, keyed by company + normalized question + filters + model names, TTL via `RAG_ANSWER_CACHE_TTL_SECONDS`, invalidated per-company at the end of `scripts/seed_documents.py` ingestion) and **embedding cache** (keyed by model + question text, TTL via `RAG_EMBEDDING_CACHE_TTL_SECONDS`); both fail open if Redis is unreachable. **Not yet implemented:** semantic/fuzzy similarity matching (the diagram's >0.95 cosine L1), L2 chunk-retrieval caching, and session/conversation state (deferred to Stage 7 when the API gains conversation memory) |
-| **6 — Async operations** | Planned | Celery tasks: large/batch ingest, reindex, optional webhooks; API enqueues work instead of blocking on big PDFs |
+| **6 — Async operations** | Done | Celery tasks (`workers/ingest_tasks.py`): `ingest_pdf_task` (chunk/embed/store one uploaded PDF, invalidate affected answer caches) and `reseed_task` (wraps `scripts/seed_documents.py run_ingestion`). HTTP surface (`api/routes/ingest.py`, gated by a dedicated **`INGEST_API_KEYS`**, independent of `RAG_API_KEYS`): `POST /ingest/upload` (multipart PDF, saved to a shared Docker volume, streamed to disk with an `INGEST_MAX_UPLOAD_MB` cap, filename sanitized against path traversal), `POST /ingest/reseed`, and `GET /ingest/status/{task_id}` for polling. Optional best-effort `webhook_url` completion/failure notification (no SSRF hardening — see Future work) |
 | **7 — Product UI** | Planned | Streamlit: tenant selection, chat thread, rendered citations / sources, aligned with the RAG API (replaces health-only placeholder) |
 
 Embedding ingestion uses **sub-batching** and an optional **inter-batch delay** (`EMBEDDING_SUB_BATCH_SIZE`, `EMBEDDING_INTER_BATCH_DELAY_SECONDS` in `api/config.py`) to avoid hammering local Ollama on large PDFs.
@@ -297,7 +299,7 @@ After seeding, you can confirm row counts and sample documents via the Chroma cl
 
 ## Configuration
 
-See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (Stage 4 gate for `POST /rag/query`), optional RAG limits (`RAG_TIER1_TOP_K`, etc.), and Stage 5 caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`).
+See [`.env.example`](.env.example) for variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (Stage 4 gate for `POST /rag/query`), optional RAG limits (`RAG_TIER1_TOP_K`, etc.), Stage 5 caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`), and Stage 6 async ingest (`INGEST_API_KEYS`, `INGEST_UPLOAD_DIR`, `INGEST_MAX_UPLOAD_MB`, `INGEST_WEBHOOK_TIMEOUT_SECONDS`).
 
 **RAG HTTP:** `POST /rag/query` with JSON body, for example:
 
@@ -313,6 +315,42 @@ See [`.env.example`](.env.example) for variables: Ollama URLs and model names, R
 `filter_doc_types` and `filter_plan_years` are optional; when present, each restricts Chroma hits to chunks whose metadata matches (same filter applies to tier 1 and tier 2). If `RAG_API_KEYS` is set in the environment, send `Authorization: Bearer <token>` or `X-API-Key: <token>` with one of the comma-separated keys.
 
 Responses include `answer`, `citations`, and `cache_hit` (Stage 5: `true` when served from the Redis exact-match answer cache instead of a fresh Chroma + Ollama round trip). Requires seeded Chroma and Ollama configured (`OLLAMA_*`); Redis is optional — if unreachable, caching is silently skipped and every request runs the full pipeline.
+
+## Async ingest (Stage 6)
+
+`POST /ingest/upload`, `POST /ingest/reseed`, and `GET /ingest/status/{task_id}` enqueue and track Celery tasks instead of blocking the API on large PDFs. All three require a valid **`INGEST_API_KEYS`** token (`Authorization: Bearer <token>` or `X-API-Key: <token>`) when that setting is non-empty — a separate key space from `RAG_API_KEYS`, since ingest is a write/admin capability.
+
+**Upload one PDF** (multipart; `tier=1` ingests into shared `global_tier1` and ignores `company_id`, `tier=2` requires a `company_id` in `COMPANY_IDS`):
+
+```bash
+curl -X POST http://localhost:8000/ingest/upload \
+  -H "X-API-Key: <INGEST_API_KEYS value>" \
+  -F "file=@new-benefits-summary.pdf" \
+  -F "company_id=bcbs" \
+  -F "tier=2" \
+  -F "plan_year=2026"
+# -> 202 {"task_id": "...", "status": "queued"}
+```
+
+`doc_type` is optional — omitted, it's inferred from the filename the same way `scripts/seed_documents.py` infers it for global PDFs. The uploaded file is streamed to `INGEST_UPLOAD_DIR` (a filename-sanitized, size-capped write; rejects anything over `INGEST_MAX_UPLOAD_MB` with `413`) — a Docker volume (`uploads_data`) shared between the `api` and `celery-worker` containers so the worker can read what the API wrote.
+
+**Re-run the bundled seed ingest** (same logic as `scripts/seed_documents.py`, just async):
+
+```bash
+curl -X POST http://localhost:8000/ingest/reseed \
+  -H "X-API-Key: <INGEST_API_KEYS value>" \
+  -H "Content-Type: application/json" \
+  -d '{"reset": false, "full": true}'
+```
+
+**Poll status:**
+
+```bash
+curl http://localhost:8000/ingest/status/<task_id> -H "X-API-Key: <INGEST_API_KEYS value>"
+# -> {"task_id": "...", "state": "SUCCESS", "result": {...}, "error": null}
+```
+
+`state` is one of `PENDING`, `STARTED`, `SUCCESS`, `FAILURE`, `RETRY`. Both request bodies accept an optional `webhook_url`; on completion the worker POSTs a JSON payload (`{"event": "ingest.completed" | "reseed.completed", "task_id": ..., "status": "success" | "failed", ...}`) to it, best-effort with no retries. Ingest tasks also invalidate the Stage 5 answer cache for every affected `company_id` (all configured companies for a tier-1 upload, since tier-1 content is merged into every tenant's answers; just the one company for tier-2).
 
 ## License / data
 

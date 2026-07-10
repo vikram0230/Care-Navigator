@@ -83,6 +83,12 @@ services:
       RAG_ANSWER_CACHE_TTL_SECONDS: ${RAG_ANSWER_CACHE_TTL_SECONDS:-3600}
       RAG_EMBEDDING_CACHE_ENABLED: ${RAG_EMBEDDING_CACHE_ENABLED:-true}
       RAG_EMBEDDING_CACHE_TTL_SECONDS: ${RAG_EMBEDDING_CACHE_TTL_SECONDS:-86400}
+      INGEST_API_KEYS: ${INGEST_API_KEYS:-}
+      INGEST_UPLOAD_DIR: /app/data/uploads
+      INGEST_MAX_UPLOAD_MB: ${INGEST_MAX_UPLOAD_MB:-25}
+      INGEST_WEBHOOK_TIMEOUT_SECONDS: ${INGEST_WEBHOOK_TIMEOUT_SECONDS:-5.0}
+    volumes:
+      - uploads_data:/app/data/uploads
     depends_on:
       redis:
         condition: service_healthy
@@ -117,6 +123,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       RAG_API_KEYS: ${RAG_API_KEYS:-}
+      INGEST_UPLOAD_DIR: /app/data/uploads
+      INGEST_MAX_UPLOAD_MB: ${INGEST_MAX_UPLOAD_MB:-25}
+      INGEST_WEBHOOK_TIMEOUT_SECONDS: ${INGEST_WEBHOOK_TIMEOUT_SECONDS:-5.0}
+    volumes:
+      - uploads_data:/app/data/uploads
     depends_on:
       redis:
         condition: service_healthy
@@ -235,6 +246,7 @@ volumes:
   ollama_data:
   prometheus_data:
   grafana_data:
+  uploads_data:
 
 networks:
   care-navigator:

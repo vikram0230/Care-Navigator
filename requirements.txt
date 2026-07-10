@@ -1,6 +1,7 @@
 # Care Navigator — Stage 1 (pinned for reproducible builds)
 # Local installs: use Python 3.12.x (matches Dockerfile); 3.14 may lack pydantic-core wheels.
 fastapi==0.115.6
+python-multipart==0.0.20
 uvicorn[standard]==0.32.1
 pydantic==2.12.5
 pydantic-settings==2.13.1
