@@ -1,13 +1,18 @@
 """Streamlit UI (Stage 7): chat with conversation memory, citations, and an ingest panel."""
 
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-from ui.api_client import ask_question, fetch_health, get_ingest_status, trigger_reseed, upload_pdf
+from ui.api_client import AskResult, ask_question, fetch_health, get_ingest_status, trigger_reseed, upload_pdf
 
 DEFAULT_API_URL = os.environ.get("API_BASE_URL", "http://api:8000")
+
+# How often the progress indicator refreshes the elapsed-time label while waiting on the LLM.
+_PROGRESS_POLL_SECONDS = 0.3
 
 
 def _company_ids() -> List[str]:
@@ -59,6 +64,15 @@ def _render_sidebar() -> Dict[str, Any]:
     }
 
 
+def _md_safe(text: str) -> str:
+    """Escape ``$`` so Streamlit's markdown doesn't render dollar amounts as LaTeX math.
+
+    Benefits/formulary answers are full of paired dollar figures (e.g. "$2,000 ... $4,000"),
+    which Streamlit otherwise interprets as an inline math span and garbles.
+    """
+    return (text or "").replace("$", "\\$")
+
+
 def _render_citations(citations: List[Dict[str, Any]]) -> None:
     if not citations:
         return
@@ -67,18 +81,22 @@ def _render_citations(citations: List[Dict[str, Any]]) -> None:
             st.markdown(
                 f"**[{c.get('index')}]** {c.get('source') or 'unknown source'} "
                 f"— tier {c.get('tier')}, doc_type={c.get('doc_type')}, plan_year={c.get('plan_year')}\n\n"
-                f"> {c.get('excerpt', '')}",
+                f"> {_md_safe(c.get('excerpt', ''))}",
             )
 
 
 def _render_chat_tab(settings: Dict[str, Any]) -> None:
+    """Render the conversation so far. The input box itself is pinned app-bottom in ``main``."""
     st.subheader("Ask a benefits question")
+
+    if not st.session_state.chat_history:
+        st.info("Ask a question using the box at the bottom of the page.")
 
     for turn in st.session_state.chat_history:
         with st.chat_message("user"):
-            st.write(turn["question"])
+            st.markdown(_md_safe(turn["question"]))
         with st.chat_message("assistant"):
-            st.write(turn["answer"])
+            st.markdown(_md_safe(turn["answer"]))
             if turn.get("cache_hit"):
                 st.caption("⚡ served from cache")
             _render_citations(turn.get("citations") or [])
@@ -87,12 +105,22 @@ def _render_chat_tab(settings: Dict[str, Any]) -> None:
         st.session_state.chat_history = []
         st.rerun()
 
-    question = st.chat_input("Ask about your benefits...")
-    if question:
-        history_payload = [
-            {"question": t["question"], "answer": t["answer"]} for t in st.session_state.chat_history
-        ]
-        result = ask_question(
+
+def _ask_with_progress(
+    progress_area: Any,
+    settings: Dict[str, Any],
+    question: str,
+    history_payload: List[Dict[str, str]],
+) -> AskResult:
+    """Call ``ask_question`` on a worker thread, updating ``progress_area`` with elapsed time.
+
+    Streamlit scripts are synchronous, so the request runs off-thread while the main thread
+    polls it and repaints a live "Thinking… Ns" label. This same poll loop is what the planned
+    async LLM queue will use to poll ``GET /rag/status/{task_id}`` instead of a thread future.
+    """
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            ask_question,
             settings["api_base"],
             question=question,
             company_id=settings["company_id"],
@@ -101,18 +129,42 @@ def _render_chat_tab(settings: Dict[str, Any]) -> None:
             conversation_history=history_payload,
             rag_api_key=_rag_api_key(),
         )
-        if result.ok:
-            st.session_state.chat_history.append(
-                {
-                    "question": question,
-                    "answer": result.answer or "",
-                    "citations": result.citations,
-                    "cache_hit": result.cache_hit,
-                },
+        start = time.monotonic()
+        while not future.done():
+            elapsed = int(time.monotonic() - start)
+            progress_area.markdown(
+                f"🤔 **Thinking… {elapsed}s** &nbsp; "
+                "<span style='opacity:0.6'>local models can take 1–2 min; "
+                "uncached follow-ups run the full pipeline</span>",
+                unsafe_allow_html=True,
             )
-            st.rerun()
-        else:
-            st.error(result.error or "Request failed")
+            time.sleep(_PROGRESS_POLL_SECONDS)
+        return future.result()
+
+
+def _handle_chat_input(settings: Dict[str, Any]) -> None:
+    """Top-level chat input (pinned to the app bottom) plus its progress indicator."""
+    question = st.chat_input("Ask about your benefits...")
+    if not question:
+        return
+    history_payload = [
+        {"question": t["question"], "answer": t["answer"]} for t in st.session_state.chat_history
+    ]
+    progress_area = st.empty()
+    result = _ask_with_progress(progress_area, settings, question, history_payload)
+    progress_area.empty()
+    if result.ok:
+        st.session_state.chat_history.append(
+            {
+                "question": question,
+                "answer": result.answer or "",
+                "citations": result.citations,
+                "cache_hit": result.cache_hit,
+            },
+        )
+        st.rerun()
+    else:
+        st.error(result.error or "Request failed")
 
 
 def _render_ingest_tab(settings: Dict[str, Any]) -> None:
@@ -200,6 +252,10 @@ def main() -> None:
         _render_chat_tab(settings)
     with ingest_tab:
         _render_ingest_tab(settings)
+
+    # Pinned to the app bottom (Claude-Code style): st.chat_input only sticks to the viewport
+    # bottom when it is a direct child of the app body, not when nested inside st.tabs.
+    _handle_chat_input(settings)
 
 
 if __name__ == "__main__":

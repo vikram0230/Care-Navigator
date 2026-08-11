@@ -61,3 +61,9 @@ Thumbs.db
 chroma_data/
 
 data/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Generated evaluation run outputs (eval/results/report.md is tracked as a sample)
+eval/results/*.json

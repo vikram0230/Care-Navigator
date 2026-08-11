@@ -14,9 +14,11 @@ import httpx
 
 _DEFAULT_TIMEOUT = 30.0
 # ask_question does a full synchronous round trip (embed + Chroma retrieval + Ollama chat
-# generation) inside a single request. A cold Ollama model load alone can take 15s+ before
-# the first token, so this needs real headroom beyond a typical HTTP timeout.
-_ASK_TIMEOUT = 90.0
+# generation) inside a single request. Uncached follow-up turns bypass the answer cache and
+# re-run the full pipeline every time — measured at ~130s on local llama3.2 — so a 90s timeout
+# reliably errored mid-conversation. Give it real headroom until the async LLM queue lands.
+# (The UI shows a live progress indicator during this wait; see ui/app.py.)
+_ASK_TIMEOUT = 300.0
 _STATUS_TIMEOUT = 10.0
 _HEALTH_TIMEOUT = 5.0
 

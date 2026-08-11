@@ -69,8 +69,30 @@ def test_chat_question_renders_answer_and_citations() -> None:
     assert len(at.chat_message) == 2  # one user turn, one assistant turn
     markdown_texts = [m.value for cm in at.chat_message for m in cm.markdown]
     assert any("What is my deductible?" in t for t in markdown_texts)
-    assert any("Your deductible is $500." in t for t in markdown_texts)
+    # answer is rendered with $ escaped (see _md_safe) so Streamlit doesn't treat it as LaTeX
+    assert any("Your deductible is \\$500." in t for t in markdown_texts)
     assert len(at.expander) == 1  # citations expander rendered
+
+
+def test_dollar_amounts_in_answer_are_escaped_not_latex() -> None:
+    at = AppTest.from_file(_APP_PATH)
+    fake_result = AskResult(
+        ok=True,
+        answer="The out-of-pocket limit is $2,000 and the family limit is $4,000.",
+        citations=[],
+        cache_hit=False,
+    )
+    with patch("ui.api_client.ask_question", return_value=fake_result):
+        at.run()
+        at.chat_input[0].set_value("What is my out-of-pocket max?")
+        at.run()
+
+    assert at.exception == []
+    markdown_texts = [m.value for cm in at.chat_message for m in cm.markdown]
+    answer_text = next(t for t in markdown_texts if "out-of-pocket limit" in t)
+    # every literal $ must be backslash-escaped so no paired $...$ math span survives
+    assert "\\$2,000" in answer_text and "\\$4,000" in answer_text
+    assert "$" not in answer_text.replace("\\$", "")
 
 
 def test_second_question_receives_first_turn_in_history() -> None:
@@ -119,6 +141,32 @@ def test_clear_conversation_resets_history() -> None:
     at.button(key="clear_conversation_button").click().run()
     assert at.session_state["chat_history"] == []
     assert len(at.chat_message) == 0
+
+
+def test_ask_with_progress_runs_offthread_and_returns_result() -> None:
+    import ui.app as app
+
+    updates: list = []
+
+    class _FakeArea:
+        def markdown(self, text: str, **_: object) -> None:
+            updates.append(text)
+
+    result = AskResult(ok=True, answer="hello", citations=[], cache_hit=False)
+    settings = {
+        "api_base": "http://api:8000",
+        "company_id": "bcbs",
+        "filter_doc_types": None,
+        "filter_plan_years": None,
+    }
+    with patch("ui.app.ask_question", return_value=result) as mock_ask:
+        out = app._ask_with_progress(_FakeArea(), settings, "What is my deductible?", [])
+
+    assert out is result
+    mock_ask.assert_called_once()
+    kwargs = mock_ask.call_args.kwargs
+    assert kwargs["company_id"] == "bcbs"
+    assert kwargs["conversation_history"] == []
 
 
 def test_ingest_upload_calls_api_client_with_expected_args() -> None:
