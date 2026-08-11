@@ -83,6 +83,8 @@ services:
       RAG_ANSWER_CACHE_TTL_SECONDS: ${RAG_ANSWER_CACHE_TTL_SECONDS:-3600}
       RAG_EMBEDDING_CACHE_ENABLED: ${RAG_EMBEDDING_CACHE_ENABLED:-true}
       RAG_EMBEDDING_CACHE_TTL_SECONDS: ${RAG_EMBEDDING_CACHE_TTL_SECONDS:-86400}
+      RAG_ASYNC_ENABLED: ${RAG_ASYNC_ENABLED:-false}
+      RAG_LLM_RATE_LIMIT: ${RAG_LLM_RATE_LIMIT:-}
       INGEST_API_KEYS: ${INGEST_API_KEYS:-}
       INGEST_UPLOAD_DIR: /app/data/uploads
       INGEST_MAX_UPLOAD_MB: ${INGEST_MAX_UPLOAD_MB:-25}
@@ -110,6 +112,9 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: care-navigator-celery
+    # Single worker process: a lone local Ollama serves one generation at a time, so concurrent
+    # LLM jobs only contend and slow each other down. RAG_LLM_RATE_LIMIT adds further backpressure.
+    command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
@@ -123,6 +128,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       RAG_API_KEYS: ${RAG_API_KEYS:-}
+      RAG_LLM_RATE_LIMIT: ${RAG_LLM_RATE_LIMIT:-}
       INGEST_UPLOAD_DIR: /app/data/uploads
       INGEST_MAX_UPLOAD_MB: ${INGEST_MAX_UPLOAD_MB:-25}
       INGEST_WEBHOOK_TIMEOUT_SECONDS: ${INGEST_WEBHOOK_TIMEOUT_SECONDS:-5.0}

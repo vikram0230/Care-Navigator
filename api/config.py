@@ -86,6 +86,21 @@ class Settings(BaseSettings):
         ge=0,
         description="TTL for cached question embeddings.",
     )
+    RAG_ASYNC_ENABLED: bool = Field(
+        default=False,
+        description=(
+            "When true, POST /rag/query enqueues the LLM work on Celery and returns 202 + task_id "
+            "(poll GET /rag/status/{task_id}); exact-match answer-cache hits still return 200 "
+            "synchronously. When false (default), the query runs synchronously in-request."
+        ),
+    )
+    RAG_LLM_RATE_LIMIT: str = Field(
+        default="",
+        description=(
+            "Optional Celery rate_limit for the async rag_query_task (e.g. '100/m'). Empty = no "
+            "limit. Provides backpressure so a burst of queries can't overwhelm a single local LLM."
+        ),
+    )
     RAG_MAX_CONVERSATION_TURNS: int = Field(
         default=6,
         ge=0,

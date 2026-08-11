@@ -31,30 +31,32 @@ Embedding ingestion uses sub-batching + optional inter-batch delay (`EMBEDDING_S
   "Thinking… Ns" progress indicator that runs the request off-thread; HTTP ask-timeout raised
   90 s → 300 s (uncached follow-ups run the full pipeline, measured 130–280 s on local llama3.2);
   `$` escaped in rendered answers/citations so dollar amounts aren't parsed as LaTeX math.
+- **Async LLM queue** — `POST /rag/query` enqueues LLM work on Celery and returns `202 {task_id}`
+  (cache hits still `200`); `GET /rag/status/{task_id}` for polling; the UI polls automatically.
+  Enabled via `RAG_ASYNC_ENABLED` in Compose. See the implemented-design section below.
 
-## Planned — next: async LLM queue + polling
+## Async LLM queue + polling (implemented)
 
-`POST /rag/query` still calls Ollama **synchronously** in-request. Because uncached follow-up turns
-re-run the full pipeline (~130–280 s locally), the request blocks and only a large client timeout
-keeps it alive. The fix mirrors the Stage 6 ingest pattern:
+`POST /rag/query` can now enqueue the LLM work on Celery instead of blocking the request, behind the
+`RAG_ASYNC_ENABLED` flag (enabled in the Compose deployment). This replaces the earlier 90→300 s
+client-timeout band-aid for uncached follow-ups (~130–280 s locally). Built mirroring the Stage 6
+ingest pattern:
 
 1. `api/schemas/rag.py` — `RagQueryAccepted {task_id, status}` and `RagQueryStatus {task_id, state, result, error}`.
-2. `workers/rag_tasks.py` — `rag_query_task` wrapping the existing `run_rag_query` unchanged.
-3. `workers/celery_app.py` — register the new task module (`include=[...]`).
-4. `api/routes/rag.py` — check the L1 answer cache **synchronously** (instant hits stay `200`); on a
-   miss, `rag_query_task.delay(...)` and return `202 {task_id}`; add `GET /rag/status/{task_id}`
-   (reuse the ingest `AsyncResult` logic).
-5. `api/config.py` — `RAG_ASYNC_ENABLED` (feature flag) + `RAG_LLM_RATE_LIMIT` (Celery `rate_limit`).
-6. `ui/api_client.py` + `ui/app.py` — `ask_question` handles 200 (cache) vs 202 (task); new
-   `get_rag_status`; the existing `_ask_with_progress` poll loop swaps the thread future for status
-   polling — same live indicator.
-7. Tests — `tests/test_rag_tasks.py`, extend `tests/test_rag_api.py` (cache→200, miss→202, status
-   mapping), `tests/test_ui_client.py` (200 vs 202).
+2. `workers/rag_tasks.py` — `rag_query_task` wrapping the existing `run_rag_query` unchanged (cache-aware Redis).
+3. `workers/celery_app.py` — registers the task (`include=[...]`) and applies `RAG_LLM_RATE_LIMIT` via `task_annotations`.
+4. `api/routes/rag.py` — synchronous answer-cache short-circuit (instant hits stay `200`); on a miss,
+   `rag_query_task.delay(...)` → `202 {task_id}`; `GET /rag/status/{task_id}` maps the Celery `AsyncResult`.
+5. `api/config.py` — `RAG_ASYNC_ENABLED` (flag, default false) + `RAG_LLM_RATE_LIMIT` (Celery rate limit).
+6. `ui/api_client.py` + `ui/app.py` — `ask_question` handles 200 (cache) vs 202 (task); `get_rag_status`;
+   `_ask_and_wait` polls to a terminal state; the existing `_ask_with_progress` thread drives the live indicator.
+7. Tests — `tests/test_rag_tasks.py`, `tests/test_rag_api.py` (cache→200, miss→202, follow-up bypass,
+   status mapping), `tests/test_ui_client.py` (202 + `get_rag_status`), `tests/test_ui_app.py` (poll→render).
 
-Run the RAG worker `--concurrency=1` (single local Ollama); `rate_limit` provides backpressure; set a
-short `result_expires`. A queue makes the wait non-blocking/observable and enables rate limiting,
-retries, and fair per-tenant queues — it does not make generation faster. Token streaming (SSE) is
-the lighter alternative if the only goal is perceived latency.
+The queue makes the wait non-blocking/observable and enables rate limiting, retries, and fair
+per-tenant queues — it does not make generation faster. **Still open:** token streaming (SSE) for
+perceived latency; running the RAG worker at `--concurrency=1` and a short `result_expires` for a
+single local Ollama; a dedicated per-tenant queue.
 
 ## Future work (deferred)
 

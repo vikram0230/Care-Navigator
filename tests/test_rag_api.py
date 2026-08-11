@@ -1,7 +1,7 @@
 """Stage 3–4 RAG route tests (validation and configuration; no live Chroma/Ollama)."""
 
 from typing import Any, Dict
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -190,3 +190,149 @@ def test_openapi_lists_rag_query(client: TestClient) -> None:
     paths = response.json().get("paths", {})
     assert "/rag/query" in paths
     assert "post" in paths["/rag/query"]
+
+
+def test_rag_query_async_enabled_cache_miss_returns_202_and_enqueues(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With RAG_ASYNC_ENABLED and no cache hit, the query is enqueued and 202 + task_id returned."""
+    monkeypatch.setenv("RAG_ASYNC_ENABLED", "true")
+    get_settings.cache_clear()
+    reset_chroma_singleton()
+    try:
+        with patch("api.routes.rag.get_redis_singleton", return_value=None), \
+            patch("api.routes.rag.rag_query_task.delay", return_value=MagicMock(id="task-abc")) as mock_delay:
+            response = client.post(
+                "/rag/query",
+                json={"question": "What is my deductible?", "company_id": "bcbs"},
+            )
+        assert response.status_code == 202
+        body = response.json()
+        assert body["task_id"] == "task-abc"
+        assert body["status"] == "queued"
+        mock_delay.assert_called_once()
+        assert mock_delay.call_args.kwargs["company_id"] == "bcbs"
+    finally:
+        monkeypatch.delenv("RAG_ASYNC_ENABLED", raising=False)
+        get_settings.cache_clear()
+        reset_chroma_singleton()
+
+
+def test_rag_query_async_enabled_cache_hit_returns_200_without_enqueue(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact-match cache hit short-circuits to 200 and never enqueues a task."""
+    monkeypatch.setenv("RAG_ASYNC_ENABLED", "true")
+    get_settings.cache_clear()
+    reset_chroma_singleton()
+    try:
+        cached = RagQueryResponse(answer="cached answer", citations=[], cache_hit=False)
+        with patch("api.routes.rag.get_redis_singleton", return_value=object()), \
+            patch("api.routes.rag.get_cached_answer", return_value=cached), \
+            patch("api.routes.rag.rag_query_task.delay") as mock_delay:
+            response = client.post(
+                "/rag/query",
+                json={"question": "What is my deductible?", "company_id": "bcbs"},
+            )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["answer"] == "cached answer"
+        assert body["cache_hit"] is True
+        mock_delay.assert_not_called()
+    finally:
+        monkeypatch.delenv("RAG_ASYNC_ENABLED", raising=False)
+        get_settings.cache_clear()
+        reset_chroma_singleton()
+
+
+def test_rag_query_async_follow_up_bypasses_cache_and_enqueues(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request with conversation_history skips the cache short-circuit and enqueues."""
+    monkeypatch.setenv("RAG_ASYNC_ENABLED", "true")
+    get_settings.cache_clear()
+    reset_chroma_singleton()
+    try:
+        with patch("api.routes.rag.get_cached_answer") as mock_cache, \
+            patch("api.routes.rag.rag_query_task.delay", return_value=MagicMock(id="t2")) as mock_delay:
+            response = client.post(
+                "/rag/query",
+                json={
+                    "question": "And my copay?",
+                    "company_id": "bcbs",
+                    "conversation_history": [{"question": "deductible?", "answer": "$500"}],
+                },
+            )
+        assert response.status_code == 202
+        mock_cache.assert_not_called()  # follow-up never consults the answer cache
+        assert mock_delay.call_args.kwargs["conversation_history"] == [
+            {"question": "deductible?", "answer": "$500"}
+        ]
+    finally:
+        monkeypatch.delenv("RAG_ASYNC_ENABLED", raising=False)
+        get_settings.cache_clear()
+        reset_chroma_singleton()
+
+
+def test_rag_query_async_validates_before_enqueue(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed question fails fast with 400 in async mode — never enqueued."""
+    monkeypatch.setenv("RAG_ASYNC_ENABLED", "true")
+    get_settings.cache_clear()
+    reset_chroma_singleton()
+    try:
+        with patch("api.routes.rag.rag_query_task.delay") as mock_delay:
+            response = client.post(
+                "/rag/query",
+                json={"question": "bad\x00question", "company_id": "bcbs"},
+            )
+        assert response.status_code == 400
+        mock_delay.assert_not_called()
+    finally:
+        monkeypatch.delenv("RAG_ASYNC_ENABLED", raising=False)
+        get_settings.cache_clear()
+        reset_chroma_singleton()
+
+
+def test_rag_status_success_returns_result(client: TestClient) -> None:
+    """GET /rag/status maps a SUCCESS task's stored dict into a RagQueryResponse."""
+    fake = MagicMock()
+    fake.state = "SUCCESS"
+    fake.result = {"answer": "done", "citations": [], "cache_hit": False}
+    with patch("api.routes.rag.celery_app.AsyncResult", return_value=fake):
+        response = client.get("/rag/status/task-xyz")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "SUCCESS"
+    assert body["result"]["answer"] == "done"
+    assert body["error"] is None
+
+
+def test_rag_status_failure_returns_error(client: TestClient) -> None:
+    """A FAILURE task surfaces its error string."""
+    fake = MagicMock()
+    fake.state = "FAILURE"
+    fake.result = RuntimeError("LLM generation failed")
+    with patch("api.routes.rag.celery_app.AsyncResult", return_value=fake):
+        response = client.get("/rag/status/task-oops")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "FAILURE"
+    assert "LLM generation failed" in body["error"]
+    assert body["result"] is None
+
+
+def test_rag_status_pending_has_no_result_or_error(client: TestClient) -> None:
+    fake = MagicMock()
+    fake.state = "PENDING"
+    with patch("api.routes.rag.celery_app.AsyncResult", return_value=fake):
+        response = client.get("/rag/status/task-wait")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "PENDING"
+    assert body["result"] is None and body["error"] is None

@@ -7,12 +7,22 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
-from ui.api_client import AskResult, ask_question, fetch_health, get_ingest_status, trigger_reseed, upload_pdf
+from ui.api_client import (
+    AskResult,
+    ask_question,
+    fetch_health,
+    get_ingest_status,
+    get_rag_status,
+    trigger_reseed,
+    upload_pdf,
+)
 
 DEFAULT_API_URL = os.environ.get("API_BASE_URL", "http://api:8000")
 
 # How often the progress indicator refreshes the elapsed-time label while waiting on the LLM.
 _PROGRESS_POLL_SECONDS = 0.3
+# How often to poll GET /rag/status/{task_id} when the API is in async mode (returned a 202).
+_STATUS_POLL_SECONDS = 1.0
 
 
 def _company_ids() -> List[str]:
@@ -106,29 +116,49 @@ def _render_chat_tab(settings: Dict[str, Any]) -> None:
         st.rerun()
 
 
+def _ask_and_wait(
+    settings: Dict[str, Any],
+    question: str,
+    history_payload: List[Dict[str, str]],
+) -> AskResult:
+    """Ask the API and, in async mode, poll GET /rag/status until the task reaches a terminal state.
+
+    In synchronous mode ``ask_question`` returns the final answer directly (``pending`` is False)
+    and this returns immediately. In async mode it returns a 202 (``pending`` + ``task_id``) and we
+    poll until SUCCESS/FAILURE. Either way the caller sees one ``AskResult``.
+    """
+    result = ask_question(
+        settings["api_base"],
+        question=question,
+        company_id=settings["company_id"],
+        filter_doc_types=settings["filter_doc_types"],
+        filter_plan_years=settings["filter_plan_years"],
+        conversation_history=history_payload,
+        rag_api_key=_rag_api_key(),
+    )
+    if not (result.ok and result.pending and result.task_id):
+        return result
+    task_id = result.task_id
+    while True:
+        status_result = get_rag_status(settings["api_base"], task_id, rag_api_key=_rag_api_key())
+        if not (status_result.ok and status_result.pending):
+            return status_result
+        time.sleep(_STATUS_POLL_SECONDS)
+
+
 def _ask_with_progress(
     progress_area: Any,
     settings: Dict[str, Any],
     question: str,
     history_payload: List[Dict[str, str]],
 ) -> AskResult:
-    """Call ``ask_question`` on a worker thread, updating ``progress_area`` with elapsed time.
+    """Run ``_ask_and_wait`` on a worker thread, updating ``progress_area`` with elapsed time.
 
-    Streamlit scripts are synchronous, so the request runs off-thread while the main thread
-    polls it and repaints a live "Thinking… Ns" label. This same poll loop is what the planned
-    async LLM queue will use to poll ``GET /rag/status/{task_id}`` instead of a thread future.
+    Streamlit scripts are synchronous, so the request (and, in async mode, its status polling) runs
+    off-thread while the main thread repaints a live "Thinking… Ns" label.
     """
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            ask_question,
-            settings["api_base"],
-            question=question,
-            company_id=settings["company_id"],
-            filter_doc_types=settings["filter_doc_types"],
-            filter_plan_years=settings["filter_plan_years"],
-            conversation_history=history_payload,
-            rag_api_key=_rag_api_key(),
-        )
+        future = executor.submit(_ask_and_wait, settings, question, history_payload)
         start = time.monotonic()
         while not future.done():
             elapsed = int(time.monotonic() - start)

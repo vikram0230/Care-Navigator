@@ -143,6 +143,23 @@ def test_clear_conversation_resets_history() -> None:
     assert len(at.chat_message) == 0
 
 
+def test_async_mode_polls_status_then_renders_answer() -> None:
+    """When ask_question returns a pending 202, the app polls get_rag_status and renders SUCCESS."""
+    at = AppTest.from_file(_APP_PATH)
+    pending = AskResult(ok=True, pending=True, task_id="rag-1")
+    done = AskResult(ok=True, answer="Your deductible is $500.", citations=[], cache_hit=False)
+    with patch("ui.api_client.ask_question", return_value=pending), \
+        patch("ui.api_client.get_rag_status", return_value=done) as mock_status:
+        at.run()
+        at.chat_input[0].set_value("What is my deductible?")
+        at.run()
+
+    assert at.exception == []
+    mock_status.assert_called()  # polled the status endpoint
+    markdown_texts = [m.value for cm in at.chat_message for m in cm.markdown]
+    assert any("Your deductible is \\$500." in t for t in markdown_texts)
+
+
 def test_ask_with_progress_runs_offthread_and_returns_result() -> None:
     import ui.app as app
 

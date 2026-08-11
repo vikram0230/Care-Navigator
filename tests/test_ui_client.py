@@ -8,6 +8,7 @@ from ui.api_client import (
     ask_question,
     fetch_health,
     get_ingest_status,
+    get_rag_status,
     trigger_reseed,
     upload_pdf,
 )
@@ -169,3 +170,53 @@ def test_get_ingest_status_parses_state_and_result() -> None:
     url = mock_get.call_args.args[0]
     assert url == "http://api:8000/ingest/status/t1"
     assert mock_get.call_args.kwargs["headers"] == {"X-API-Key": "key"}
+
+
+def test_ask_question_202_returns_pending_with_task_id() -> None:
+    """Async mode: a 202 marks the result pending with the task_id to poll."""
+    resp = _mock_response({"task_id": "rag-123", "status": "queued"}, status_code=202)
+    with patch("ui.api_client.httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.post.return_value = resp
+        result = ask_question("http://api:8000", question="q", company_id="bcbs")
+    assert result.ok is True
+    assert result.pending is True
+    assert result.task_id == "rag-123"
+    assert result.answer is None
+
+
+def test_get_rag_status_success_returns_answer() -> None:
+    resp = _mock_response({
+        "task_id": "rag-123",
+        "state": "SUCCESS",
+        "result": {"answer": "Your deductible is $500.", "citations": [], "cache_hit": False},
+        "error": None,
+    })
+    with patch("ui.api_client.httpx.Client") as mock_client_cls:
+        mock_get = mock_client_cls.return_value.__enter__.return_value.get
+        mock_get.return_value = resp
+        result = get_rag_status("http://api:8000", "rag-123", rag_api_key="key")
+    assert result.ok is True
+    assert result.pending is False
+    assert result.answer == "Your deductible is $500."
+    assert mock_get.call_args.args[0] == "http://api:8000/rag/status/rag-123"
+    assert mock_get.call_args.kwargs["headers"] == {"X-API-Key": "key"}
+
+
+def test_get_rag_status_pending_state_stays_pending() -> None:
+    resp = _mock_response({"task_id": "rag-123", "state": "STARTED", "result": None, "error": None})
+    with patch("ui.api_client.httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.get.return_value = resp
+        result = get_rag_status("http://api:8000", "rag-123")
+    assert result.ok is True
+    assert result.pending is True
+    assert result.state == "STARTED"
+
+
+def test_get_rag_status_failure_returns_error() -> None:
+    resp = _mock_response({"task_id": "rag-123", "state": "FAILURE", "result": None, "error": "LLM generation failed"})
+    with patch("ui.api_client.httpx.Client") as mock_client_cls:
+        mock_client_cls.return_value.__enter__.return_value.get.return_value = resp
+        result = get_rag_status("http://api:8000", "rag-123")
+    assert result.ok is False
+    assert result.pending is False
+    assert "LLM generation failed" in (result.error or "")

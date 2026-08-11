@@ -111,3 +111,21 @@ class RagQueryResponse(BaseModel):
         False,
         description="True when served from the Stage 5 exact-match Redis answer cache.",
     )
+
+
+class RagQueryAccepted(BaseModel):
+    """Returned (HTTP 202) when RAG_ASYNC_ENABLED and the query is enqueued for a worker."""
+
+    task_id: str = Field(..., description="Celery task id; poll GET /rag/status/{task_id}.")
+    status: str = Field("queued", description="Always 'queued' at enqueue time.")
+
+
+class RagQueryStatus(BaseModel):
+    """Current state of an async RAG query enqueued via POST /rag/query."""
+
+    task_id: str = Field(..., description="Celery task id.")
+    state: str = Field(..., description="PENDING, STARTED, SUCCESS, FAILURE, or RETRY.")
+    result: Optional[RagQueryResponse] = Field(
+        None, description="The full answer + citations, present on SUCCESS.",
+    )
+    error: Optional[str] = Field(None, description="Error message, present on FAILURE.")

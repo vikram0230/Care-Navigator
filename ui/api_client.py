@@ -36,6 +36,11 @@ class AskResult:
     citations: List[Dict[str, Any]] = field(default_factory=list)
     cache_hit: bool = False
     error: Optional[str] = None
+    # Async mode (RAG_ASYNC_ENABLED): a 202 sets pending=True + task_id; poll get_rag_status until
+    # a terminal state. In synchronous mode these stay at their defaults and callers ignore them.
+    pending: bool = False
+    task_id: Optional[str] = None
+    state: Optional[str] = None
 
 
 @dataclass
@@ -109,6 +114,9 @@ def ask_question(
             response = client.post(url, json=body, headers=_auth_headers(rag_api_key))
             response.raise_for_status()
             data = response.json()
+            if response.status_code == 202:
+                # Async mode: work was enqueued; caller polls get_rag_status(task_id).
+                return AskResult(ok=True, pending=True, task_id=data.get("task_id"), state="queued")
             return AskResult(
                 ok=True,
                 answer=data.get("answer", ""),
@@ -117,6 +125,37 @@ def ask_question(
             )
     except Exception as exc:
         return AskResult(ok=False, error=_error_message(exc))
+
+
+def get_rag_status(
+    api_base: str,
+    task_id: str,
+    rag_api_key: Optional[str] = None,
+) -> AskResult:
+    """Call ``GET /rag/status/{task_id}`` (async RAG). Terminal states carry the answer or error."""
+    url = f"{api_base.rstrip('/')}/rag/status/{task_id}"
+    try:
+        with httpx.Client(timeout=_STATUS_TIMEOUT) as client:
+            response = client.get(url, headers=_auth_headers(rag_api_key))
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        return AskResult(ok=False, error=_error_message(exc))
+    state = data.get("state")
+    if state == "SUCCESS":
+        result = data.get("result") or {}
+        return AskResult(
+            ok=True,
+            pending=False,
+            state=state,
+            answer=result.get("answer", ""),
+            citations=result.get("citations", []),
+            cache_hit=bool(result.get("cache_hit", False)),
+        )
+    if state == "FAILURE":
+        return AskResult(ok=False, state=state, error=data.get("error") or "Query failed")
+    # PENDING / STARTED / RETRY — still in flight.
+    return AskResult(ok=True, pending=True, state=state, task_id=task_id)
 
 
 def upload_pdf(

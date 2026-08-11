@@ -89,6 +89,8 @@ flowchart TD
 
 A query embeds the question with Ollama, retrieves from the shared `global_tier1` collection plus the caller's `{company_id}_tier2` collection, merges hits by vector distance, and asks Ollama's chat model to answer using only those passages — returning the answer with numbered citations. Retrieval only ever touches `global_tier1` and the caller's own tier-2 collection, so tenants cannot see each other's documents.
 
+When `RAG_ASYNC_ENABLED` is set, the LLM work for a query is enqueued on the same Celery worker as ingestion (rather than blocking the request); the API returns `202 {task_id}` and the UI polls `GET /rag/status/{task_id}`. An exact-match answer-cache hit still returns `200` immediately. This keeps requests non-blocking and enables rate limiting (`RAG_LLM_RATE_LIMIT`) so a burst of queries can't overwhelm a single local model.
+
 ### Component summary
 
 | Component | Technology | Purpose |
@@ -178,6 +180,15 @@ Baseline on the bundled seed (nomic-embed-text, tier1/tier2 top-k = 6, cap 12): 
 `filter_doc_types` and `filter_plan_years` are optional; when present, each restricts Chroma hits to chunks whose metadata matches (same filter applies to tier 1 and tier 2). `conversation_history` is optional: prior Q&A turns, oldest first, threaded into the LLM prompt so follow-ups are contextual; trimmed server-side to the most recent `RAG_MAX_CONVERSATION_TURNS`. A non-empty `conversation_history` always bypasses the exact-match answer cache. If `RAG_API_KEYS` is set, send `Authorization: Bearer <token>` or `X-API-Key: <token>` with one of the comma-separated keys.
 
 Responses include `answer`, `citations`, and `cache_hit` (`true` when served from the Redis exact-match answer cache instead of a fresh Chroma + Ollama round trip — always `false` when the request included `conversation_history`). Requires seeded Chroma and Ollama configured (`OLLAMA_*`); Redis is optional — if unreachable, caching is silently skipped and every request runs the full pipeline.
+
+**Async mode (`RAG_ASYNC_ENABLED`):** when enabled, `POST /rag/query` enqueues the LLM work on Celery and returns `202 {"task_id": "...", "status": "queued"}` instead of blocking (an exact-match answer-cache hit still returns `200` immediately). Poll the task with the same API key:
+
+```bash
+curl http://localhost:8000/rag/status/<task_id> -H "X-API-Key: <RAG_API_KEYS value>"
+# -> {"task_id": "...", "state": "SUCCESS", "result": {"answer": "...", "citations": [...]}, "error": null}
+```
+
+`state` is one of `PENDING`, `STARTED`, `SUCCESS`, `FAILURE`, `RETRY`; on `SUCCESS`, `result` holds the full answer + citations. `RAG_LLM_RATE_LIMIT` (e.g. `100/m`) caps how fast the worker pulls query jobs. The Streamlit chat uses this path automatically, showing its live progress indicator while it polls.
 
 ### Async ingest
 
@@ -304,7 +315,7 @@ RUN_CHROMA_INTEGRATION=1 pytest tests/test_multitenancy.py -m integration -q
 
 ## Configuration
 
-See [`.env.example`](.env.example) for all variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (gate for `POST /rag/query`), RAG limits (`RAG_TIER1_TOP_K`, `RAG_TIER2_TOP_K`, `RAG_MAX_CONTEXT_CHUNKS`), caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`), async ingest (`INGEST_API_KEYS`, `INGEST_UPLOAD_DIR`, `INGEST_MAX_UPLOAD_MB`, `INGEST_WEBHOOK_TIMEOUT_SECONDS`), conversation memory (`RAG_MAX_CONVERSATION_TURNS`), and the UI (`API_BASE_URL`, `STREAMLIT_RAG_API_KEY`, `STREAMLIT_INGEST_API_KEY`).
+See [`.env.example`](.env.example) for all variables: Ollama URLs and model names, Redis/Celery URLs, Chroma host/port, `COMPANY_IDS`, logging, `EMBEDDING_*` (ingest pacing), optional **`RAG_API_KEYS`** (gate for `POST /rag/query`), RAG limits (`RAG_TIER1_TOP_K`, `RAG_TIER2_TOP_K`, `RAG_MAX_CONTEXT_CHUNKS`), caching (`RAG_ANSWER_CACHE_ENABLED`, `RAG_ANSWER_CACHE_TTL_SECONDS`, `RAG_EMBEDDING_CACHE_ENABLED`, `RAG_EMBEDDING_CACHE_TTL_SECONDS`), async query queue (`RAG_ASYNC_ENABLED`, `RAG_LLM_RATE_LIMIT`), async ingest (`INGEST_API_KEYS`, `INGEST_UPLOAD_DIR`, `INGEST_MAX_UPLOAD_MB`, `INGEST_WEBHOOK_TIMEOUT_SECONDS`), conversation memory (`RAG_MAX_CONVERSATION_TURNS`), and the UI (`API_BASE_URL`, `STREAMLIT_RAG_API_KEY`, `STREAMLIT_INGEST_API_KEY`).
 
 ## Repository layout
 
