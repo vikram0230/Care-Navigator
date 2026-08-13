@@ -25,8 +25,7 @@ flowchart TD
 
         API -->|"1 · check L1"| L1
         L1 -.->|"hit · return answer (200)"| API
-        L1 -->|"2 · miss · check L2"| EMB
-        EMB -->|"3 · miss · enqueue query (202)"| BROKER
+        L1 -->|"2 · miss · enqueue query (202)"| BROKER
 
         subgraph REDIS["Redis"]
             L1["L1 answer cache\nexact-match answer · TTL by config"]
@@ -49,8 +48,11 @@ flowchart TD
             WORKER["Celery worker\nRAG query: retrieve · generate\ningest: chunk · embed · store"]
         end
         UP --> BROKER
-        WORKER -->|"retrieve tier1 + tenant tier2"| CHROMA
-        WORKER -->|"embed + chat"| LLM
+        WORKER -->|"3 · check L2 (embedding)"| EMB
+        EMB -.->|"hit · reuse vector"| WORKER
+        WORKER -->|"query: retrieve · ingest: store"| CHROMA
+        WORKER -->|"embed (on miss) + chat"| LLM
+        LLM -.->|"vector + answer"| WORKER
         WORKER -.->|"store answer in L1"| L1
 
         subgraph OBS["Observability"]
