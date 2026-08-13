@@ -23,15 +23,18 @@ flowchart TD
 
         API["FastAPI + LangChain\nRAG pipeline · company_id isolation · conversation memory\nAPI-key auth · question guardrails"]
 
-        API -->|"answer + embedding cache"| REDIS
-        API -->|"retrieve tier1 + tenant tier2"| CHROMA
-        API -->|"embed + chat (synchronous)"| LLM
+        API -->|"1 · check L1"| L1
+        L1 -.->|"hit · return answer (200)"| API
+        L1 -->|"2 · miss · check L2"| EMB
+        EMB -->|"3 · miss · enqueue query (202)"| BROKER
 
         subgraph REDIS["Redis"]
-            L1["L1 answer cache\nexact-match, TTL by config"]
-            EMB["Question embedding cache"]
-            BROKER["Celery broker\ningest queue"]
+            L1["L1 answer cache\nexact-match answer · TTL by config"]
+            EMB["L2 embedding cache\nreuse question vector"]
+            BROKER["Celery broker\nasync LLM queue + ingest"]
         end
+
+        BROKER --> WORKER
 
         subgraph CHROMA["ChromaDB — tenant collections"]
             T1["global_tier1\nShared preventive-care guidelines"]
@@ -41,13 +44,14 @@ flowchart TD
 
         LLM["Ollama\nEmbeddings + chat"]
 
-        subgraph INGEST["Ingestion (async)"]
+        subgraph INGEST["Ingestion + async RAG worker"]
             UP["PDF upload / reseed\nPOST /ingest/*"]
-            WORKER["Celery worker\nchunk · embed · store"]
+            WORKER["Celery worker\nRAG query: retrieve · generate\ningest: chunk · embed · store"]
         end
         UP --> BROKER
-        BROKER --> WORKER
-        WORKER --> CHROMA
+        WORKER -->|"retrieve tier1 + tenant tier2"| CHROMA
+        WORKER -->|"embed + chat"| LLM
+        WORKER -.->|"store answer in L1"| L1
 
         subgraph OBS["Observability"]
             PROM["Prometheus\n/metrics scrape"]
@@ -98,8 +102,8 @@ When `RAG_ASYNC_ENABLED` is set, the LLM work for a query is enqueued on the sam
 | UI | Streamlit (`ui/app.py`, `ui/api_client.py`) | Tenant switcher, bottom-pinned chat with a live progress indicator, rendered citations, cache-hit badge, and an ingest panel (upload / reseed / status) |
 | API | FastAPI + LangChain | RAG pipeline, tenant isolation, conversation memory (`conversation_history`, bounded by `RAG_MAX_CONVERSATION_TURNS`), optional API-key auth, and question guardrails |
 | L1 answer cache | Redis (`api/cache.py`) | Exact-match answer cache keyed by company + normalized question + filters + model names; TTL via `RAG_ANSWER_CACHE_TTL_SECONDS`; invalidated on re-ingest; fails open if Redis is down |
-| Embedding cache | Redis (`api/cache.py`) | Caches question embeddings (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) to avoid re-embedding identical question text |
-| Ingest queue | Redis + Celery | `workers/ingest_tasks.py` run PDF upload and bundled reseed asynchronously so the API never blocks on large PDFs |
+| L2 embedding cache | Redis (`api/cache.py`) | Caches question embeddings (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) to avoid re-embedding identical question text |
+| Async queue | Redis + Celery | One broker + worker for both async RAG queries (`workers/rag_tasks.py`, when `RAG_ASYNC_ENABLED`) and ingest (`workers/ingest_tasks.py`); the API enqueues and returns immediately (`202`), the UI polls `GET /rag/status/{task_id}` |
 | Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (from `COMPANY_IDS`) |
 | LLM / embeddings | Ollama | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `OLLAMA_CHAT_MODEL`) |
 | Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`) |
