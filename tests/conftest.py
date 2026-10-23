@@ -15,6 +15,10 @@ os.environ.setdefault("COMPANY_IDS", "bcbs,wells_fargo")
 # route tests exercise the synchronous path. Setting it here (os.environ wins over .env) makes the
 # suite hermetic; the async-path tests opt in with monkeypatch.setenv("RAG_ASYNC_ENABLED", "true").
 os.environ.setdefault("RAG_ASYNC_ENABLED", "false")
+# Chat is Hugging Face. A non-empty token keeps route tests off the 503 misconfiguration
+# path; the missing-token test overrides this to "".
+os.environ.setdefault("HF_TOKEN", "test-token")
+os.environ.setdefault("HF_CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
 
 from api.config import Settings, get_settings
 from api.deps import reset_chroma_singleton

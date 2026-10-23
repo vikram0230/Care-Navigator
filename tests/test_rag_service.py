@@ -20,7 +20,8 @@ def _settings(**overrides: Any) -> SettingsForTests:
     defaults: Dict[str, Any] = dict(
         OLLAMA_BASE_URL="http://127.0.0.1:11434",
         OLLAMA_EMBEDDING_MODEL="nomic-embed-text",
-        OLLAMA_CHAT_MODEL="llama3.2",
+        HF_CHAT_MODEL="meta-llama/Llama-3.1-8B-Instruct:novita",
+        HF_TOKEN="test-token",
         COMPANY_IDS="bcbs,wells_fargo",
         RAG_ANSWER_CACHE_ENABLED=True,
         RAG_ANSWER_CACHE_TTL_SECONDS=3600,
@@ -73,7 +74,7 @@ def test_run_rag_query_cache_hit_skips_embedding_and_chroma_and_llm() -> None:
         None,
         None,
         settings.OLLAMA_EMBEDDING_MODEL,
-        settings.OLLAMA_CHAT_MODEL,
+        settings.HF_CHAT_MODEL,
     )
     cached_json = (
         '{"answer": "Cached deductible answer.", "citations": [], "cache_hit": false}'
@@ -130,7 +131,7 @@ def test_run_rag_query_cache_miss_runs_full_flow_and_stores_answer() -> None:
         None,
         None,
         settings.OLLAMA_EMBEDDING_MODEL,
-        settings.OLLAMA_CHAT_MODEL,
+        settings.HF_CHAT_MODEL,
     )
     redis_client.setex.assert_any_call(
         answer_key,
@@ -200,7 +201,7 @@ def test_run_rag_query_answer_cache_disabled_bypasses_cache() -> None:
         None,
         None,
         settings.OLLAMA_EMBEDDING_MODEL,
-        settings.OLLAMA_CHAT_MODEL,
+        settings.HF_CHAT_MODEL,
     )
     for call in redis_client.setex.call_args_list:
         assert call.args[0] != answer_key
@@ -340,7 +341,7 @@ def test_run_rag_query_bypasses_answer_cache_when_history_present() -> None:
         None,
         None,
         settings.OLLAMA_EMBEDDING_MODEL,
-        settings.OLLAMA_CHAT_MODEL,
+        settings.HF_CHAT_MODEL,
     )
     # Never read from or written to the answer cache when history is present.
     assert all(call.args[0] != answer_key for call in redis_client.get.call_args_list)
@@ -396,3 +397,23 @@ def test_run_rag_query_redis_failure_falls_back_gracefully() -> None:
 
     assert result.answer == "The answer is 42."
     assert result.cache_hit is False
+
+
+def test_run_rag_query_flattens_list_message_content() -> None:
+    settings, _tier1, _tier2, embeddings, chat, get_collection_fn = _patched_run()
+    chat.invoke.return_value = AIMessage(
+        content=[
+            {"type": "text", "text": "Deductible is $500 [1]."},
+            {"type": "reasoning"},
+        ],
+    )
+    with patch("api.services.rag.get_collection", side_effect=get_collection_fn), \
+        patch("api.services.rag.get_embedding_model", return_value=embeddings), \
+        patch("api.services.rag.get_chat_model", return_value=chat):
+        result = run_rag_query(
+            chroma_client=MagicMock(),
+            settings=settings,
+            question="What is my deductible?",
+            company_id="bcbs",
+        )
+    assert result.answer == "Deductible is $500 [1]."

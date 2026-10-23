@@ -40,8 +40,8 @@ services:
     networks:
       - care-navigator
 
-  # Phase B: default dev backend — pull models after first start:
-  #   docker exec -it care-navigator-ollama ollama pull nomic-embed-text && ollama pull llama3.2
+  # Embeddings backend — pull the embedding model after first start:
+  #   docker exec -it care-navigator-ollama ollama pull nomic-embed-text
   ollama:
     image: ollama/ollama:latest
     container_name: care-navigator-ollama
@@ -69,7 +69,9 @@ services:
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
+      HF_INFERENCE_BASE_URL: ${HF_INFERENCE_BASE_URL:-https://router.huggingface.co/v1}
+      HF_CHAT_MODEL: ${HF_CHAT_MODEL:-meta-llama/Llama-3.1-8B-Instruct:novita}
+      HF_TOKEN: ${HF_TOKEN:-}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
@@ -112,13 +114,15 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: care-navigator-celery
-    # Single worker process: a lone local Ollama serves one generation at a time, so concurrent
-    # LLM jobs only contend and slow each other down. RAG_LLM_RATE_LIMIT adds further backpressure.
+    # Single worker process: embeddings still hit the local Ollama, so concurrent embed jobs
+    # contend. Chat is a remote Hugging Face call. RAG_LLM_RATE_LIMIT adds further backpressure.
     command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
+      HF_INFERENCE_BASE_URL: ${HF_INFERENCE_BASE_URL:-https://router.huggingface.co/v1}
+      HF_CHAT_MODEL: ${HF_CHAT_MODEL:-meta-llama/Llama-3.1-8B-Instruct:novita}
+      HF_TOKEN: ${HF_TOKEN:-}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
@@ -173,7 +177,6 @@ services:
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
-      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-llama3.2}
       REDIS_URL: redis://redis:6379/0
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"

@@ -28,9 +28,17 @@ class Settings(BaseSettings):
         default="nomic-embed-text",
         description="Ollama model for embeddings; pull with `ollama pull`.",
     )
-    OLLAMA_CHAT_MODEL: str = Field(
-        default="llama3.2",
-        description="Ollama model for RAG chat; pull with `ollama pull`.",
+    HF_INFERENCE_BASE_URL: str = Field(
+        default="https://router.huggingface.co/v1",
+        description="Hugging Face Inference Providers OpenAI-compatible base URL.",
+    )
+    HF_CHAT_MODEL: str = Field(
+        default="meta-llama/Llama-3.1-8B-Instruct:novita",
+        description="Chat model id, including the :novita provider suffix.",
+    )
+    HF_TOKEN: str = Field(
+        default="",
+        description="Hugging Face token with Inference Providers permission. Never log this value.",
     )
     EMBEDDING_SUB_BATCH_SIZE: int = Field(
         default=50,

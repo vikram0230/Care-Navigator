@@ -67,3 +67,4 @@ data/
 
 # Generated evaluation run outputs (eval/results/report.md is tracked as a sample)
 eval/results/*.json
+docs/*

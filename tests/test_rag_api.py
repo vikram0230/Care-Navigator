@@ -45,7 +45,8 @@ def test_rag_query_missing_ollama_base_url_returns_503(
     """OLLAMA_BASE_URL must be set for RAG."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "")
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
-    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "llama3.2")
+    monkeypatch.setenv("HF_CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
+    monkeypatch.setenv("HF_TOKEN", "test-token")
     get_settings.cache_clear()
     reset_chroma_singleton()
     try:
@@ -57,6 +58,29 @@ def test_rag_query_missing_ollama_base_url_returns_503(
         assert "OLLAMA_BASE_URL" in response.json().get("detail", "")
     finally:
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        get_settings.cache_clear()
+        reset_chroma_singleton()
+
+
+def test_rag_query_missing_hf_token_returns_503(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blank Hugging Face token must not call the chat provider."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+    monkeypatch.setenv("HF_CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
+    monkeypatch.setenv("HF_TOKEN", "")
+    get_settings.cache_clear()
+    reset_chroma_singleton()
+    try:
+        response = client.post(
+            "/rag/query",
+            json={"question": "Test question?", "company_id": "bcbs"},
+        )
+        assert response.status_code == 503
+        assert "HF_TOKEN" in response.json().get("detail", "")
+    finally:
         get_settings.cache_clear()
         reset_chroma_singleton()
 
@@ -168,7 +192,8 @@ def test_rag_query_rejects_null_byte_question(
     """Guardrails return 400 for disallowed characters."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
     monkeypatch.setenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
-    monkeypatch.setenv("OLLAMA_CHAT_MODEL", "llama3.2")
+    monkeypatch.setenv("HF_CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct:novita")
+    monkeypatch.setenv("HF_TOKEN", "test-token")
     get_settings.cache_clear()
     reset_chroma_singleton()
     try:

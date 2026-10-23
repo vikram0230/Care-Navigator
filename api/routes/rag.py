@@ -28,16 +28,26 @@ router = APIRouter(prefix="/rag", tags=["rag"])
 
 
 def _require_llm_configured(settings: Settings) -> None:
-    """Raise HTTP 503 if Ollama URL or model names are missing."""
+    """Raise HTTP 503 if embeddings or the Hugging Face chat client are not configured."""
     if not settings.OLLAMA_BASE_URL.strip():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="OLLAMA_BASE_URL is not configured",
         )
-    if not settings.OLLAMA_EMBEDDING_MODEL.strip() or not settings.OLLAMA_CHAT_MODEL.strip():
+    if not settings.OLLAMA_EMBEDDING_MODEL.strip():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OLLAMA_EMBEDDING_MODEL and OLLAMA_CHAT_MODEL are required",
+            detail="OLLAMA_EMBEDDING_MODEL is required",
+        )
+    if not settings.HF_TOKEN.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="HF_TOKEN is not configured",
+        )
+    if not settings.HF_CHAT_MODEL.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="HF_CHAT_MODEL is not configured",
         )
 
 
@@ -54,7 +64,7 @@ def _try_answer_cache(settings: Settings, body: RagQueryRequest, cid: str) -> Un
         body.filter_doc_types,
         body.filter_plan_years,
         settings.OLLAMA_EMBEDDING_MODEL,
-        settings.OLLAMA_CHAT_MODEL,
+        settings.HF_CHAT_MODEL,
     )
     cached = get_cached_answer(redis_client, key)
     if cached is None:
