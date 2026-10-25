@@ -48,6 +48,21 @@ class _Hit:
     tier: int
 
 
+def _answer_text(content: object) -> str:
+    """Reduce a chat message body to the plain answer string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+        return "".join(parts)
+    return str(content or "")
+
+
 def _embed_query(embeddings: Embeddings, text: str) -> List[float]:
     vec = embeddings.embed_query(text)
     return list(vec)
@@ -172,7 +187,7 @@ def run_rag_query(
     different mid-conversation.
 
     Raises:
-        ValueError: Unknown ``company_id``, failed question validation, or missing Ollama configuration.
+        ValueError: Unknown ``company_id``, failed question validation, or missing model configuration.
         ChromaError: Vector store query failure.
         RuntimeError: LLM invocation failure.
     """
@@ -197,7 +212,7 @@ def run_rag_query(
             filter_doc_types,
             filter_plan_years,
             settings.OLLAMA_EMBEDDING_MODEL,
-            settings.OLLAMA_CHAT_MODEL,
+            settings.HF_CHAT_MODEL,
         )
         cached = get_cached_answer(redis_client, answer_key)
         if cached is not None:
@@ -246,8 +261,7 @@ def run_rag_query(
         logger.exception("Chat model invoke failed")
         raise RuntimeError("LLM generation failed") from exc
 
-    content = getattr(ai_msg, "content", None)
-    answer = content if isinstance(content, str) else str(content or "")
+    answer = _answer_text(getattr(ai_msg, "content", None))
 
     response = RagQueryResponse(answer=answer.strip(), citations=citations)
 

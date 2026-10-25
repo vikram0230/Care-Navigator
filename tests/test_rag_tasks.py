@@ -14,7 +14,8 @@ def _settings(**overrides: object) -> SettingsForTests:
         COMPANY_IDS="bcbs,wells_fargo",
         REDIS_URL="redis://localhost:6379/0",
         OLLAMA_EMBEDDING_MODEL="nomic-embed-text",
-        OLLAMA_CHAT_MODEL="llama3.2",
+        HF_CHAT_MODEL="meta-llama/Llama-3.1-8B-Instruct:novita",
+        HF_TOKEN="test-token",
     )
     defaults.update(overrides)
     return SettingsForTests(**defaults)

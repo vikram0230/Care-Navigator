@@ -1,4 +1,4 @@
-"""LangChain clients for Ollama (embeddings + chat)."""
+"""LangChain clients: Ollama embeddings and Hugging Face chat."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
-from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
+from langchain_openai import ChatOpenAI
 
 from api.config import Settings, get_settings
 
@@ -36,21 +37,24 @@ def get_embedding_model(settings: Optional[Settings] = None) -> Embeddings:
 
 
 def get_chat_model(settings: Optional[Settings] = None) -> BaseChatModel:
-    """Build ``ChatOllama`` from settings.
+    """Build a Hugging Face chat client pinned to the configured provider.
 
     Raises:
-        ValueError: Missing Ollama URL or chat model name.
+        ValueError: Missing base URL, model id, or token.
         RuntimeError: Client initialization failed.
     """
     resolved = settings or get_settings()
-    base = resolved.OLLAMA_BASE_URL.strip()
+    base = resolved.HF_INFERENCE_BASE_URL.strip()
     if not base:
-        raise ValueError("OLLAMA_BASE_URL is not set.")
-    model = resolved.OLLAMA_CHAT_MODEL.strip()
+        raise ValueError("HF_INFERENCE_BASE_URL is not set.")
+    model = resolved.HF_CHAT_MODEL.strip()
     if not model:
-        raise ValueError("OLLAMA_CHAT_MODEL is not set.")
+        raise ValueError("HF_CHAT_MODEL is not set.")
+    token = resolved.HF_TOKEN.strip()
+    if not token:
+        raise ValueError("HF_TOKEN is not set.")
     try:
-        return ChatOllama(model=model, base_url=base, temperature=0.1)
+        return ChatOpenAI(model=model, base_url=base, api_key=token, temperature=0.1)
     except Exception as exc:
-        logger.exception("Failed to initialize ChatOllama")
-        raise RuntimeError("Could not create Ollama chat client") from exc
+        logger.exception("Failed to initialize Hugging Face chat client")
+        raise RuntimeError("Could not create Hugging Face chat client") from exc

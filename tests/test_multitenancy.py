@@ -92,7 +92,8 @@ def chroma_seeded_environment() -> Dict[str, Any]:
     env.setdefault("ENVIRONMENT", "development")
     env["OLLAMA_BASE_URL"] = settings.OLLAMA_BASE_URL
     env["OLLAMA_EMBEDDING_MODEL"] = settings.OLLAMA_EMBEDDING_MODEL
-    env["OLLAMA_CHAT_MODEL"] = settings.OLLAMA_CHAT_MODEL
+    env["HF_CHAT_MODEL"] = settings.HF_CHAT_MODEL
+    env["HF_TOKEN"] = settings.HF_TOKEN
     env["CHROMA_HOST"] = settings.CHROMA_HOST
     env["CHROMA_PORT"] = str(settings.CHROMA_PORT)
     env["COMPANY_IDS"] = settings.COMPANY_IDS

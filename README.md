@@ -107,7 +107,8 @@ When `RAG_ASYNC_ENABLED` is set, the LLM work for a query is enqueued on the sam
 | L2 embedding cache | Redis (`api/cache.py`) | Caches question embeddings (`RAG_EMBEDDING_CACHE_TTL_SECONDS`) to avoid re-embedding identical question text |
 | Async queue | Redis + Celery | One broker + worker for both async RAG queries (`workers/rag_tasks.py`, when `RAG_ASYNC_ENABLED`) and ingest (`workers/ingest_tasks.py`); the API enqueues and returns immediately (`202`), the UI polls `GET /rag/status/{task_id}` |
 | Vector DB | ChromaDB | `global_tier1` plus `bcbs_tier2`, `wells_fargo_tier2` (from `COMPANY_IDS`) |
-| LLM / embeddings | Ollama | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`, `OLLAMA_CHAT_MODEL`) |
+| Embeddings | Ollama | `api/llm_client.py` (`OLLAMA_BASE_URL`, `OLLAMA_EMBEDDING_MODEL`) |
+| Chat | Hugging Face Inference Providers, routed to Novita | `api/llm_client.py` (`HF_INFERENCE_BASE_URL`, `HF_CHAT_MODEL`, `HF_TOKEN`). The model id must end in `:novita`. Novita's context window for this model is 16,384 tokens. |
 | Ingestion | Python + LangChain + `pypdf` | PDF chunk, embed, store (`scripts/seed_documents.py`, `vectordb/ingestion.py`) |
 | Evaluation | `eval/` | Retrieval-quality harness over a hand-curated gold set (Recall@k, Precision@k, MRR, nDCG@k, cross-tenant leakage, latency) |
 | Monitoring | Prometheus + Grafana | Request counts, latency, and other API metrics |
@@ -128,21 +129,22 @@ Embedding cache (exact-match) ─ HIT ──► reuse cached vector, skip Ollama
     MISS                                    │
     │                                       │
     ▼                                       ▼
-Ollama embeds the question ──────────► ChromaDB retrieval → Ollama chat → cache answer in L1
+Ollama embeds the question ──────────► ChromaDB retrieval → Hugging Face chat → cache answer in L1
 ```
 
 The L1 answer cache and embedding cache are **exact-match** (`api/cache.py`), keyed by normalized question text (plus filters and model names for L1). A request carrying `conversation_history` always bypasses the answer cache, since the same question text can mean something different mid-conversation.
 
 **Tenants in seed data:** default `COMPANY_IDS` are `bcbs` and `wells_fargo`. Add employers via `scripts/seed_documents.py` (`TIER2_SEED_FILES`) and `COMPANY_IDS`.
 
-## LLM (Ollama)
+## LLM
 
-The stack uses **Ollama** for embeddings and chat everywhere (ingest, RAG, and tests that hit a real model).
+Embeddings stay on **Ollama**. Chat is **Hugging Face Inference Providers**, pinned to Novita (`meta-llama/Llama-3.1-8B-Instruct:novita`).
 
 - **`OLLAMA_BASE_URL`:** `http://ollama:11434` in Compose, `http://localhost:11434` on the host when talking to a local daemon.
-- **`OLLAMA_EMBEDDING_MODEL`** / **`OLLAMA_CHAT_MODEL`:** must match pulled models. After the first `docker compose up`, for example:
-  `docker exec -it care-navigator-ollama ollama pull nomic-embed-text && docker exec -it care-navigator-ollama ollama pull llama3.2`
-  The **ollama** service has a healthcheck (`ollama list`); API / worker / Streamlit **wait for it** before starting.
+- **`OLLAMA_EMBEDDING_MODEL`:** must match a pulled model. After the first `docker compose up`:
+  `docker exec -it care-navigator-ollama ollama pull nomic-embed-text`
+  The **ollama** service has a healthcheck (`ollama list`); API / worker / Streamlit **wait for it** before starting, because ingest and query embeddings still use it.
+- **`HF_INFERENCE_BASE_URL`**, **`HF_CHAT_MODEL`**, **`HF_TOKEN`:** chat. The model id includes the `:novita` suffix so the router cannot pick another provider. `HF_TOKEN` is a fine-grained Hugging Face token with Inference Providers permission. It belongs in `.env` only and is not committed. Novita's context window for this model is 16,384 tokens. A missing token makes `POST /rag/query` return 503.
 
 **Important:** changing the embedding model requires **re-ingesting** Chroma (`scripts/seed_documents.py --reset …`).
 
@@ -327,7 +329,7 @@ See [`.env.example`](.env.example) for all variables: Ollama URLs and model name
 
 | Path | Purpose |
 |------|---------|
-| `api/` | FastAPI app, config, deps, `llm_client.py` (Ollama), `routes/`, `schemas/`, `services/rag.py` |
+| `api/` | FastAPI app, config, deps, `llm_client.py` (Ollama embeddings, Hugging Face chat), `routes/`, `schemas/`, `services/rag.py` |
 | `vectordb/` | Chroma client, collection naming, PDF ingestion pipeline |
 | `scripts/seed_documents.py` | CLI to create collections and ingest `data/seed/` PDFs; also invoked async by `reseed_task` |
 | `data/seed/` | Tier-1 global PDFs under `global/`; tier-2 PDFs per employer |
